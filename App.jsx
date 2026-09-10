@@ -424,9 +424,25 @@ export default function App() {
   const secondaryLabel = tradeMode === "sell" ? "Kostpris" : "Videresalg";
   const profitLabel = tradeMode === "sell" ? "Fortjeneste" : "Avance";
 
-  const shown = materials.filter((m) =>
-    m.name.toLowerCase().includes(q.trim().toLowerCase()) &&
-    (activeCat === "Alle" || (m.cat || "Materialer") === activeCat));
+  // Antal styk handlet pr. vare (købt + solgt), udledt af de handler appen allerede har indlæst
+  const tradeCounts = {};
+  sales.forEach((t) => {
+    (t.lines || []).forEach((l) => {
+      if (!l.id) return;
+      tradeCounts[l.id] = (tradeCounts[l.id] || 0) + (l.qty || 0);
+    });
+  });
+
+  const shown = materials
+    .filter((m) =>
+      m.name.toLowerCase().includes(q.trim().toLowerCase()) &&
+      (activeCat === "Alle" || (m.cat || "Materialer") === activeCat))
+    .sort((a, b) => {
+      const aOnStock = (inventory[a.id] || 0) > 0 ? 1 : 0;
+      const bOnStock = (inventory[b.id] || 0) > 0 ? 1 : 0;
+      if (aOnStock !== bOnStock) return bOnStock - aOnStock; // på lager før udsolgt
+      return (tradeCounts[b.id] || 0) - (tradeCounts[a.id] || 0); // flest handlede styk øverst
+    });
 
   const cats = ["Alle", ...(config.categories || ["Materialer"])];
 
