@@ -100,17 +100,119 @@ function bestMaterialMatch(rawName, materials) {
   });
   return bestScore >= 0.45 ? { material: best, score: bestScore } : null;
 }
-// Deler OCR-teksten op i linjer og udleder et evt. antal for enden af hver linje (fx "KAGOZ 5" -> navn "KAGOZ", antal 5)
-function parseOcrLines(rawText) {
-  return (rawText || "")
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter((l) => l.replace(/[^A-Za-zÆØÅæøå0-9]/g, "").length > 1)
-    .map((line) => {
-      const m = line.match(/^(.{2,}?)[\s:xX×\-]+(\d{1,4})$/);
-      if (m) return { raw: line, name: m[1].trim(), qty: Math.max(1, parseInt(m[2], 10)) };
-      return { raw: line, name: line, qty: 1 };
-    });
+// ── Bakken er altid 5 felter bred. Vi skærer billedet op i kvadratiske
+//    felter og OCR'er hvert felt for sig, så navne/antal ikke smøres
+//    sammen på tværs af rækken. ──
+const TRAY_COLS = 5;
+const CELL_EMPTY_MEAN_MAX = 28;        // gennemsnitlig lysstyrke under dette = sandsynligvis tomt
+const CELL_EMPTY_VARIANCE_MAX = 180;   // lav varians = ensartet (tomt) felt
+const CELL_EMPTY_BRIGHT_RATIO_MAX = 0.035; // andel "lyse" pixels under dette = sandsynligvis tomt
+const NAME_STRIP_HEIGHT_RATIO = 0.28;  // nederste ~28% af feltet = varenavn
+const QTY_WIDTH_RATIO = 0.35;          // øverste venstre hjørne: ~35% bredde
+const QTY_HEIGHT_RATIO = 0.30;         // ~30% højde
+const CROP_UPSCALE = 3;                // opskalering af beskårne områder før OCR
+
+function loadImageEl(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("Kunne ikke indlæse billedet."));
+    img.src = src;
+  });
+}
+
+// Er feltet (stort set) tomt? Sampler pixlerne og kigger på lysstyrke/varians.
+function isCellEmpty(ctx, x, y, w, h) {
+  const iw = Math.max(1, Math.round(w)), ih = Math.max(1, Math.round(h));
+  const { data } = ctx.getImageData(Math.round(x), Math.round(y), iw, ih);
+  let sum = 0, sumSq = 0, n = 0, bright = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    sum += lum; sumSq += lum * lum; n++;
+    if (lum > 60) bright++;
+  }
+  if (n === 0) return true;
+  const mean = sum / n;
+  const variance = sumSq / n - mean * mean;
+  const brightRatio = bright / n;
+  return mean < CELL_EMPTY_MEAN_MAX && variance < CELL_EMPTY_VARIANCE_MAX && brightRatio < CELL_EMPTY_BRIGHT_RATIO_MAX;
+}
+
+// Beskærer et område af kilde-canvas'et til et nyt, opskaleret og gråtonet canvas (bedre OCR-præcision)
+function cropToGrayCanvas(sourceCanvas, sx, sy, sw, sh, scale) {
+  const out = document.createElement("canvas");
+  out.width = Math.max(1, Math.round(sw * scale));
+  out.height = Math.max(1, Math.round(sh * scale));
+  const octx = out.getContext("2d");
+  octx.imageSmoothingEnabled = true;
+  octx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, out.width, out.height);
+  const imgData = octx.getImageData(0, 0, out.width, out.height);
+  const d = imgData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    d[i] = d[i + 1] = d[i + 2] = lum;
+  }
+  octx.putImageData(imgData, 0, 0);
+  return out;
+}
+
+const NAME_WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆØÅæøå0123456789 ./-";
+const QTY_WHITELIST = "0123456789";
+
+// Skærer billedet op i bakke-felter (5 i bredden, kvadratiske) og OCR'er hvert
+// ikke-tomt felts navn- og antal-område for sig. Returnerer én { raw, name, qty } pr. fundet vare.
+async function scanTrayImage(imgSrc, worker, onProgress) {
+  const img = await loadImageEl(imgSrc);
+  const canvas = document.createElement("canvas");
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(img, 0, 0);
+
+  const cellW = canvas.width / TRAY_COLS;
+  const cellH = cellW; // felterne antages kvadratiske
+  const rows = Math.floor(canvas.height / cellH);
+  if (rows < 1) throw new Error("Billedet er for lille/forkert formet til at finde bakke-felter.");
+
+  const cells = [];
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < TRAY_COLS; c++) {
+      const x = c * cellW, y = r * cellH;
+      if (!isCellEmpty(ctx, x, y, cellW, cellH)) cells.push({ x, y, w: cellW, h: cellH });
+    }
+  }
+  if (cells.length === 0) return [];
+
+  const results = [];
+  for (let i = 0; i < cells.length; i++) {
+    const cell = cells[i];
+    onProgress(Math.round((i / cells.length) * 100));
+
+    // NAVN: nederste ~28% stribe, fuld bredde af feltet
+    const nameH = cell.h * NAME_STRIP_HEIGHT_RATIO;
+    const nameY = cell.y + cell.h - nameH;
+    const nameCanvas = cropToGrayCanvas(canvas, cell.x, nameY, cell.w, nameH, CROP_UPSCALE);
+
+    await worker.setParameters({ tessedit_char_whitelist: NAME_WHITELIST });
+    const { data: nameData } = await worker.recognize(nameCanvas);
+    const name = (nameData.text || "").replace(/\s+/g, " ").trim();
+    if (!name) continue; // intet læseligt navn -> spring feltet over
+
+    // ANTAL: øverste venstre hjørne (venstre ~35%, øverste ~30%). Øverste højre hjørne (vægt) ignoreres helt.
+    const qtyW = cell.w * QTY_WIDTH_RATIO;
+    const qtyH = cell.h * QTY_HEIGHT_RATIO;
+    const qtyCanvas = cropToGrayCanvas(canvas, cell.x, cell.y, qtyW, qtyH, CROP_UPSCALE);
+
+    let qty = 1;
+    await worker.setParameters({ tessedit_char_whitelist: QTY_WHITELIST });
+    const { data: qtyData } = await worker.recognize(qtyCanvas);
+    const digits = (qtyData.text || "").replace(/[^0-9]/g, "");
+    if (digits) qty = Math.max(1, parseInt(digits, 10));
+
+    results.push({ raw: qty > 1 ? `${name} (${qty})` : name, name, qty });
+  }
+  onProgress(100);
+  return results;
 }
 
 export default function App() {
@@ -1107,17 +1209,14 @@ function ScanTrayModal({ materials, onApply, onClose }) {
   };
 
   const runScan = async () => {
-    if (!imgFile) return;
+    if (!imgSrc) return;
     setScanning(true); setProgress(0); setErr("");
+    let worker = null;
     try {
       const { createWorker } = await import("tesseract.js");
-      const worker = await createWorker("eng", 1, {
-        logger: (msg) => { if (msg.status === "recognizing text" && typeof msg.progress === "number") setProgress(Math.round(msg.progress * 100)); },
-      });
-      const { data } = await worker.recognize(imgFile);
-      await worker.terminate();
-      const parsed = parseOcrLines(data.text);
-      if (parsed.length === 0) { setErr("Kunne ikke læse nogen tekst i billedet. Prøv et tydeligere/nærmere screenshot."); setScanning(false); return; }
+      worker = await createWorker("eng");
+      const parsed = await scanTrayImage(imgSrc, worker, setProgress);
+      if (parsed.length === 0) { setErr("Fandt ingen udfyldte felter eller læselige varenavne i billedet. Prøv et tydeligere/nærmere screenshot af bakken."); setScanning(false); await worker.terminate(); return; }
       setRows(parsed.map((p) => {
         const match = bestMaterialMatch(p.name, materials);
         return { raw: p.raw, materialId: match ? match.material.id : "", qty: p.qty, checked: true };
@@ -1125,6 +1224,7 @@ function ScanTrayModal({ materials, onApply, onClose }) {
     } catch (e) {
       setErr("OCR fejlede: " + (e?.message || String(e)));
     }
+    if (worker) { try { await worker.terminate(); } catch (e) {} }
     setScanning(false);
   };
 
