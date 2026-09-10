@@ -449,7 +449,7 @@ export default function App() {
             const quickBtn = dark ? { background: "#262626", color: "#d4d4d4", border: "1px solid #444" } : { background: "#f5f5f4", color: "#57534e", border: "1px solid #e7e5e4" };
             return (
               <div key={m.id} className="rounded-xl border p-3"
-                style={{ background: stockBg, borderColor: active ? GOLD : stockBorder, borderLeft: active ? `3px solid ${GOLD}` : `1px solid ${stockBorder}` }}>
+                style={{ background: stockBg, borderColor: active ? GOLD : stockBorder, borderLeft: active ? `3px solid ${GOLD}` : `1px solid ${stockBorder}`, opacity: isEmpty ? 0.5 : 1 }}>
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="font-bold" style={{ color: dark ? "white" : INK }}>{m.name}</div>
@@ -463,25 +463,25 @@ export default function App() {
                   </div>
                   <div className="flex items-center gap-2">
                     <button onClick={() => setQty(m, (c?.qty || 0) - 1)}
-                      className="w-9 h-9 rounded-lg border flex items-center justify-center disabled:opacity-30"
+                      className="w-11 h-11 rounded-lg border flex items-center justify-center disabled:opacity-30"
                       style={{ borderColor: dark ? "#444" : "#d6d3d1", color: dark ? "#ccc" : "#57534e" }}
-                      disabled={!active}><Minus size={16} /></button>
+                      disabled={!active}><Minus size={18} /></button>
                     <input type="number" inputMode="numeric" value={c?.qty || ""} placeholder="0"
                       onChange={(e) => setQty(m, Math.max(0, +e.target.value))}
-                      className="w-14 text-center rounded-lg border py-2 text-sm font-bold"
+                      className="w-16 text-center rounded-lg border py-2.5 text-sm font-bold"
                       style={{ borderColor: dark ? "#444" : "#d6d3d1", background: dark ? "#111" : "white", color: dark ? "white" : INK }} />
                     <button onClick={() => setQty(m, (c?.qty || 0) + 1)}
-                      className="w-9 h-9 rounded-lg flex items-center justify-center font-black"
+                      className="w-11 h-11 rounded-lg flex items-center justify-center font-black"
                       style={{ background: GOLD, color: INK }}>
-                      <Plus size={16} /></button>
+                      <Plus size={18} /></button>
                   </div>
                 </div>
-                <div className="flex items-center gap-1.5 mt-2">
-                  <button onClick={() => setQty(m, (c?.qty || 0) + 5)} className="px-2.5 py-1 rounded-md text-[11px] font-bold" style={quickBtn}>+5</button>
-                  <button onClick={() => setQty(m, (c?.qty || 0) + 10)} className="px-2.5 py-1 rounded-md text-[11px] font-bold" style={quickBtn}>+10</button>
+                <div className="flex items-center gap-2 mt-2.5">
+                  <button onClick={() => setQty(m, (c?.qty || 0) + 5)} className="px-3.5 py-2 rounded-md text-xs font-bold" style={quickBtn}>+5</button>
+                  <button onClick={() => setQty(m, (c?.qty || 0) + 10)} className="px-3.5 py-2 rounded-md text-xs font-bold" style={quickBtn}>+10</button>
                   {tradeMode === "sell" && (
                     <button onClick={() => setQty(m, stock)} disabled={stock <= 0}
-                      className="px-2.5 py-1 rounded-md text-[11px] font-bold disabled:opacity-30" style={quickBtn}>Max</button>
+                      className="px-3.5 py-2 rounded-md text-xs font-bold disabled:opacity-30" style={quickBtn}>Max</button>
                   )}
                 </div>
                 {active && (
