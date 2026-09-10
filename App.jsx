@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, Lock, Package, ArrowLeftRight } from "lucide-react";
+import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, Lock, Package, ArrowLeftRight, Home } from "lucide-react";
 import {
   loadConfig, saveConfig as sbSaveConfig, loadSales as sbLoadSales, insertSale, logEvent,
   signIn, signOut, getSession, onAuthChange, loadMyProfile, loadAllProfiles,
@@ -65,6 +65,7 @@ const DEFAULT_CONFIG = {
 };
 
 const fmt = (n) => (Math.round(n) || 0).toLocaleString("da-DK");
+const PAGE_MAX = 1100; // max-bredde for indholdssider på brede skærme (Kunder/Ansatte/Rediger)
 
 export default function App() {
   // ── Login (Supabase Auth) ──
@@ -127,7 +128,21 @@ export default function App() {
   const [cash, setCashState] = useState(0);
   const loadCashFn = async () => { try { setCashState(await loadCash()); } catch (e) {} };
   const [tradeMode, setTradeMode] = useState("buy"); // buy | sell
-  const switchTradeMode = (m) => { if (m !== tradeMode) { setTradeMode(m); setCart({}); } };
+  // Skifter Køb/Sælg uden at miste det, man har tastet ind — kun prisen pr. linje
+  // regnes om til den nye tilstands standardpris (køb- eller salgspris).
+  const switchTradeMode = (m) => {
+    if (m === tradeMode) return;
+    setTradeMode(m);
+    setCart((prev) => {
+      const next = {};
+      Object.keys(prev).forEach((mid) => {
+        const mat = (config?.materials || []).find((x) => x.id === mid);
+        if (!mat) return;
+        next[mid] = { qty: prev[mid].qty, price: m === "sell" ? (mat.sell ?? mat.price) : mat.price };
+      });
+      return next;
+    });
+  };
 
   const canManageStore = !!profile && (profile.role === "ejer" || profile.role === "manager");
   const isOwner = !!profile && profile.role === "ejer";
@@ -136,6 +151,7 @@ export default function App() {
     if (!canManageStore) return;
     setShowSettings(true); editingRef.current = true;
   };
+  const goHome = () => { setView("beregner"); setShowSettings(false); editingRef.current = false; setOpenCust(null); };
 
   const loadConfigFn = async (isFirst) => {
     try {
@@ -295,7 +311,7 @@ export default function App() {
         style={wide
           ? { background: `linear-gradient(135deg, ${INK} 0%, #232323 60%, ${INK} 100%)`, borderBottom: `3px solid ${GOLD}` }
           : { background: INK, borderBottom: `3px solid ${GOLD}` }}>
-        <div className="flex items-center gap-3">
+        <button onClick={goHome} className="flex items-center gap-3 text-left" title="Til forsiden">
           <span className="inline-flex items-center justify-center rounded-lg font-black shrink-0"
             style={{ background: GOLD, color: INK, width: wide ? 52 : 40, height: wide ? 52 : 40, fontSize: wide ? 26 : 20 }}>◆</span>
           <div>
@@ -303,7 +319,7 @@ export default function App() {
             <div className={"font-black leading-none text-white " + (wide ? "text-3xl" : "text-lg")}>{config.shopName}</div>
             {wide && <div className="text-[10px] text-stone-500 mt-1 flex items-center gap-1"><Clock size={10} /> Priser synkroniseres automatisk</div>}
           </div>
-        </div>
+        </button>
         <div className="flex items-center gap-2">
           <div className="hidden sm:flex items-center gap-1.5 pl-3 pr-3 py-2 rounded-full text-xs font-bold"
             style={{ background: "rgba(245,179,1,.15)", color: GOLD }}>
@@ -315,6 +331,11 @@ export default function App() {
                 style={mode === v ? { background: GOLD, color: INK } : { color: GOLD }}>{l}</button>
             ))}
           </div>
+          <button onClick={goHome}
+            className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
+            style={view === "beregner" && !showSettings ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+            <Home size={16} /> <span className="hidden sm:inline">Hjem</span>
+          </button>
           <button onClick={() => { setView(view === "kunder" ? "beregner" : "kunder"); setShowSettings(false); setOpenCust(null); }}
             className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
             style={view === "kunder" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
@@ -389,6 +410,7 @@ export default function App() {
           <div className="relative">
             <Search size={15} className="absolute left-2.5 top-2.5 text-stone-400" />
             <input placeholder="Søg materiale…" value={q} onChange={(e) => setQ(e.target.value)}
+              autoFocus={wide}
               className="w-full rounded-lg border pl-8 pr-3 py-2 text-sm"
               style={wide ? { borderColor: "#3a3a3a", background: PANEL, color: "white" } : { borderColor: "#d6d3d1", background: "white" }} />
           </div>
@@ -420,17 +442,23 @@ export default function App() {
             const dark = wide;
             const stock = inventory[m.id] || 0;
             const oversell = tradeMode === "sell" && active && c.qty > stock;
+            const isEmpty = stock <= 0;
+            const isLow = stock > 0 && stock <= 5;
+            const stockBg = isEmpty ? (dark ? "rgba(248,113,113,.07)" : "#fdf4f3") : isLow ? (dark ? "rgba(156,163,175,.08)" : "#f6f5f4") : (dark ? PANEL : "white");
+            const stockBorder = isEmpty ? (dark ? "#5c2b2b" : "#f3c9c6") : isLow ? (dark ? "#4a4a48" : "#e5e3e0") : (dark ? "#333" : "#e7e5e4");
+            const quickBtn = dark ? { background: "#262626", color: "#d4d4d4", border: "1px solid #444" } : { background: "#f5f5f4", color: "#57534e", border: "1px solid #e7e5e4" };
             return (
               <div key={m.id} className="rounded-xl border p-3"
-                style={dark
-                  ? { background: PANEL, borderColor: active ? GOLD : "#333", borderLeft: active ? `3px solid ${GOLD}` : "1px solid #333" }
-                  : { background: "white", borderColor: active ? INK : "#e7e5e4" }}>
+                style={{ background: stockBg, borderColor: active ? GOLD : stockBorder, borderLeft: active ? `3px solid ${GOLD}` : `1px solid ${stockBorder}` }}>
                 <div className="flex items-center justify-between">
                   <div>
                     <div className="font-bold" style={{ color: dark ? "white" : INK }}>{m.name}</div>
                     <div className="text-[11px]" style={{ color: dark ? "#9ca3af" : "#a8a29e" }}>
-                      Køb {fmt(m.price)} · <span style={{ color: GOLD }}>Salg {fmt(m.sell ?? m.price)}</span> {cur} pr. {m.unit || "stk."}
-                      {" · "}Lager: <span style={{ color: oversell ? "#f87171" : (stock <= 0 ? "#f87171" : (dark ? "#9ca3af" : "#a8a29e")), fontWeight: oversell ? 700 : 400 }}>{stock}</span>
+                      <span style={tradeMode === "buy" ? { color: GOLD, fontWeight: 700 } : {}}>Køb {fmt(m.price)}</span>
+                      {" · "}
+                      <span style={tradeMode === "sell" ? { color: GOLD, fontWeight: 700 } : {}}>Salg {fmt(m.sell ?? m.price)}</span>
+                      {" "}{cur} pr. {m.unit || "stk."}
+                      {" · "}Lager: <span style={{ color: (oversell || isEmpty) ? "#f87171" : isLow ? (dark ? "#facc15" : "#b45309") : (dark ? "#9ca3af" : "#a8a29e"), fontWeight: (oversell || isEmpty || isLow) ? 700 : 400 }}>{stock}</span>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -447,6 +475,14 @@ export default function App() {
                       style={{ background: GOLD, color: INK }}>
                       <Plus size={16} /></button>
                   </div>
+                </div>
+                <div className="flex items-center gap-1.5 mt-2">
+                  <button onClick={() => setQty(m, (c?.qty || 0) + 5)} className="px-2.5 py-1 rounded-md text-[11px] font-bold" style={quickBtn}>+5</button>
+                  <button onClick={() => setQty(m, (c?.qty || 0) + 10)} className="px-2.5 py-1 rounded-md text-[11px] font-bold" style={quickBtn}>+10</button>
+                  {tradeMode === "sell" && (
+                    <button onClick={() => setQty(m, stock)} disabled={stock <= 0}
+                      className="px-2.5 py-1 rounded-md text-[11px] font-bold disabled:opacity-30" style={quickBtn}>Max</button>
+                  )}
                 </div>
                 {active && (
                   <div className="mt-2 pt-2 flex items-center justify-between gap-2" style={{ borderTop: `1px solid ${dark ? "#333" : "#f0efed"}` }}>
@@ -607,7 +643,7 @@ function Customers({ sales, config, cur, wide, openCust, setOpenCust }) {
   const sub = dk ? "#9ca3af" : "#78716c";
   const custs = buildCustomers(sales);
   const wrap = "pb-10 " + (dk ? "px-8 pt-6 mx-auto " : "px-3 pt-3 ") + (dk ? "text-white" : "");
-  const wrapStyle = dk ? { maxWidth: 900 } : {};
+  const wrapStyle = dk ? { maxWidth: PAGE_MAX } : {};
 
   if (openCust) {
     const c = custs.find((x) => x.id === openCust);
@@ -779,8 +815,12 @@ function InventoryView({ materials, inventory, cur, wide, canEdit, cash, onSetQt
       <div className="space-y-2">
         {shown.map((m) => {
           const qty = inventory[m.id] || 0;
+          const isEmpty = qty <= 0;
+          const isLow = qty > 0 && qty <= 5;
+          const rowBg = isEmpty ? (dk ? "rgba(248,113,113,.07)" : "#fdf4f3") : isLow ? (dk ? "rgba(156,163,175,.08)" : "#f6f5f4") : box.background;
+          const rowBorder = isEmpty ? (dk ? "#5c2b2b" : "#f3c9c6") : isLow ? (dk ? "#4a4a48" : "#e5e3e0") : box.borderColor;
           return (
-            <div key={m.id} className="rounded-xl border p-3 flex items-center justify-between" style={box}>
+            <div key={m.id} className="rounded-xl border p-3 flex items-center justify-between" style={{ background: rowBg, borderColor: rowBorder }}>
               <div>
                 <div className="font-bold" style={{ color: dk ? "white" : INK }}>{m.name}</div>
                 <div className="text-[11px]" style={{ color: sub }}>
@@ -797,7 +837,7 @@ function InventoryView({ materials, inventory, cur, wide, canEdit, cash, onSetQt
                 </div>
               ) : (
                 <button onClick={() => canEdit && startEdit(m)} className="text-right" disabled={!canEdit}>
-                  <div className="text-xl font-black tabular-nums" style={{ color: qty <= 0 ? "#f87171" : (dk ? GOLD : INK) }}>
+                  <div className="text-xl font-black tabular-nums" style={{ color: isEmpty ? "#f87171" : isLow ? (dk ? "#facc15" : "#b45309") : (dk ? GOLD : INK) }}>
                     {fmt(qty)} <span className="text-xs font-bold" style={{ color: sub }}>stk.</span>
                   </div>
                   {canEdit && <div className="text-[10px] font-bold" style={{ color: dk ? GOLD : BLUE }}>Ret</div>}
@@ -820,7 +860,7 @@ function StaffAdmin({ staffList, refresh, myId, wide }) {
   const inp = "rounded-lg border px-2 py-2 text-sm " + (dk ? "" : "border-stone-300 bg-white");
   const inpStyle = dk ? { borderColor: "#3a3a3a", background: PANEL, color: "white" } : {};
   const wrap = "pb-10 " + (dk ? "px-8 pt-6 mx-auto " : "px-3 pt-3 ") + (dk ? "text-white" : "");
-  const wrapStyle = dk ? { maxWidth: 720 } : {};
+  const wrapStyle = dk ? { maxWidth: PAGE_MAX } : {};
 
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -1147,7 +1187,7 @@ function PriceSettings({ config, save, close, wide }) {
   };
 
   return (
-    <div className={"space-y-3 pb-10 " + (dk ? "px-8 pt-6 mx-auto" : "px-3 pt-3")} style={dk ? { maxWidth: 720 } : {}}>
+    <div className={"space-y-3 pb-10 " + (dk ? "px-8 pt-6 mx-auto" : "px-3 pt-3")} style={dk ? { maxWidth: PAGE_MAX } : {}}>
       <button onClick={restoreDefaults}
         className="w-full py-2.5 rounded-lg font-black text-sm border-2 border-dashed"
         style={confirmReset
