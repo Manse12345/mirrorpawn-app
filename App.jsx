@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Award, ChevronLeft } from "lucide-react";
+import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft } from "lucide-react";
 import { loadConfig, saveConfig as sbSaveConfig, loadSales as sbLoadSales, insertSale, logEvent, supabaseReady } from "./supabase-store.js";
 
 /* ── Pawnshop-beregner ────────────────────────────────────────────
@@ -17,6 +17,7 @@ const DEFAULT_CONFIG = {
   currency: "kr.",
   ownerPin: "1234",
   managerPin: "0000",
+  staff: [], // { id, name, pin, commissionPct }
   categories: ["Materialer", "Heists", "Våben & Udstyr", "Andet"],
   pointsPer: 1000,
   levels: [
@@ -87,6 +88,26 @@ export default function App() {
   const [pinInput, setPinInput] = useState("");
   const [pinErr, setPinErr] = useState(false);
   const [pinShow, setPinShow] = useState(false);
+
+  // ── Sælger-identifikation (PIN pr. ansat) ──
+  const [seller, setSeller] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem("pawn_seller_v1") || "null"); } catch (e) { return null; }
+  });
+  const setSellerPersist = (s) => {
+    setSeller(s);
+    try {
+      if (s) sessionStorage.setItem("pawn_seller_v1", JSON.stringify(s));
+      else sessionStorage.removeItem("pawn_seller_v1");
+    } catch (e) {}
+  };
+  const [askSellerPin, setAskSellerPin] = useState(false);
+  const [sellerPinInput, setSellerPinInput] = useState("");
+  const [sellerPinErr, setSellerPinErr] = useState(false);
+  const identifySeller = (pin) => {
+    const staff = config?.staff || [];
+    return staff.find((p) => p.pin && p.pin === pin) || null;
+  };
+
   const tryOpen = () => {
     if (showSettings) { setShowSettings(false); editingRef.current = false; return; }
     setAskPin(true); setPinInput(""); setPinErr(false);
@@ -119,6 +140,7 @@ export default function App() {
       setSales((rows || []).map((r) => ({
         id: "t" + r.id, at: new Date(r.at).getTime(), custId: r.cust_id || "",
         points: r.points, lines: r.lines, total: +r.total, sellTotal: +r.sell_total, profit: +r.profit,
+        sellerId: r.seller_id || "", sellerName: r.seller_name || "", commission: +r.commission || 0,
       })));
     } catch (e) {}
   };
@@ -181,15 +203,21 @@ export default function App() {
 
   const cats = ["Alle", ...(config.categories || ["Materialer"])];
 
-  const saveTrade = () => {
+  const saveTrade = (sellerArg) => {
     if (lines.length === 0) return;
+    // kræv sælger-PIN, hvis der er oprettet ansatte, og ingen er identificeret endnu
+    const activeSeller = sellerArg || seller;
+    if ((config.staff || []).length > 0 && !activeSeller) { setAskSellerPin(true); return; }
+
     const pts = Math.floor(total / (config.pointsPer || 1000));
+    const commission = activeSeller ? Math.round(total * ((activeSeller.commissionPct || 0) / 100)) : 0;
     const trade = {
       id: "t" + Date.now(), at: Date.now(),
       custId: custId.trim(),
       points: pts,
       lines: lines.map((l) => ({ name: l.m.name, qty: l.qty, price: l.price, unit: l.m.unit, sum: l.sum, sellSum: l.sellSum })),
       total, sellTotal, profit,
+      sellerId: activeSeller?.id || "", sellerName: activeSeller?.name || "", commission,
     };
     // beregn evt. niveau-skift FØR vs EFTER for kunden
     const id = custId.trim();
@@ -213,6 +241,15 @@ export default function App() {
         if (id && afterLvl !== beforeLvl) await logEvent("levelup", { custId: id, level: afterLvl, points: prevPoints + pts });
       } catch (e) {}
     })();
+  };
+
+  const submitSellerPin = () => {
+    const match = identifySeller(sellerPinInput.trim());
+    if (!match) { setSellerPinErr(true); return; }
+    const s = { id: match.id, name: match.name, commissionPct: +match.commissionPct || 0 };
+    setSellerPersist(s);
+    setAskSellerPin(false); setSellerPinInput(""); setSellerPinErr(false);
+    saveTrade(s);
   };
 
   return (
@@ -250,6 +287,13 @@ export default function App() {
             style={view === "kunder" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
             <User size={16} /> Kunder
           </button>
+          {(config.staff || []).length > 0 && (
+            <button onClick={() => { setView(view === "ansatte" ? "beregner" : "ansatte"); setShowSettings(false); }}
+              className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
+              style={view === "ansatte" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+              <Users size={16} /> Ansatte
+            </button>
+          )}
           <button onClick={() => { setView(view === "log" ? "beregner" : "log"); setShowSettings(false); }}
             className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
             style={view === "log" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
@@ -288,8 +332,28 @@ export default function App() {
           </div>
         </div>
       )}
+      {askSellerPin && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 px-6" onClick={() => setAskSellerPin(false)}>
+          <div className="bg-white rounded-2xl p-5 w-full max-w-xs" onClick={(e) => e.stopPropagation()}>
+            <div className="font-black text-stone-900 mb-1">Hvem sælger?</div>
+            <div className="text-xs text-stone-500 mb-3">Indtast din personlige PIN-kode for at gemme handlen.</div>
+            <input type="password" inputMode="numeric" autoFocus value={sellerPinInput}
+              onChange={(e) => { setSellerPinInput(e.target.value); setSellerPinErr(false); }}
+              onKeyDown={(e) => e.key === "Enter" && submitSellerPin()}
+              className="w-full rounded-lg border px-3 py-2.5 text-center text-lg font-bold tracking-widest bg-white text-stone-900"
+              style={{ borderColor: sellerPinErr ? RED : "#d6d3d1" }} placeholder="Din PIN" />
+            {sellerPinErr && <div className="text-xs mt-1.5 font-semibold" style={{ color: RED }}>Ukendt PIN — spørg en manager om at oprette dig under Ansatte.</div>}
+            <div className="flex gap-2 mt-3">
+              <button onClick={() => { setAskSellerPin(false); setSellerPinInput(""); setSellerPinErr(false); }} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-bold text-stone-600">Annullér</button>
+              <button onClick={submitSellerPin} className="flex-1 py-2.5 rounded-lg text-white font-bold" style={{ background: BLUE }}>Bekræft</button>
+            </div>
+          </div>
+        </div>
+      )}
       {view === "kunder" && !showSettings ? (
         <Customers sales={sales} config={config} cur={cur} wide={wide} openCust={openCust} setOpenCust={setOpenCust} />
+      ) : view === "ansatte" && !showSettings ? (
+        <StaffView sales={sales} config={config} cur={cur} wide={wide} />
       ) : view === "log" && !showSettings ? (
         <SalesLog sales={sales} cur={cur} wide={wide} onClear={() => { if (role === "ejer") saveSales([]); }} role={role}
           onDelete={(id) => saveSales(sales.filter((s) => s.id !== id))} />
@@ -411,9 +475,15 @@ export default function App() {
                       </div>
                     )}
                   </div>
+                  {(config.staff || []).length > 0 && (
+                    <div className="mt-2 flex items-center justify-between text-[11px]" style={{ color: "#9ca3af" }}>
+                      <span>Sælger: <span className="font-bold" style={{ color: seller ? GOLD : "#f87171" }}>{seller ? seller.name : "ikke valgt endnu"}</span></span>
+                      {seller && <button onClick={() => setSellerPersist(null)} className="font-bold underline flex items-center gap-1" style={{ color: GOLD }}><LogOut size={11} /> Skift</button>}
+                    </div>
+                  )}
                   {lines.length > 0 && (
                     <div className="mt-2 space-y-2">
-                      <button onClick={saveTrade}
+                      <button onClick={() => saveTrade()}
                         className="w-full flex items-center justify-center gap-1.5 px-4 py-3 rounded-xl font-black text-base"
                         style={{ background: GOLD, color: INK }}>
                         <Save size={18} /> Gem handel &amp; kvittering
@@ -457,6 +527,12 @@ export default function App() {
             <div className="px-4 pt-2">
               <input value={custId} onChange={(e) => setCustId(e.target.value)} placeholder="Kunde-ID (valgfrit)"
                 className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm bg-white" />
+            </div>
+          )}
+          {lines.length > 0 && (config.staff || []).length > 0 && (
+            <div className="px-4 pt-2 flex items-center justify-between text-[11px] text-stone-500">
+              <span>Sælger: <span className="font-bold" style={{ color: seller ? GOLD_D : RED }}>{seller ? seller.name : "ikke valgt endnu"}</span></span>
+              {seller && <button onClick={() => setSellerPersist(null)} className="font-bold underline" style={{ color: BLUE }}>Skift</button>}
             </div>
           )}
           <div className="px-4 py-3 flex items-center justify-between">
@@ -614,6 +690,55 @@ function Customers({ sales, config, cur, wide, openCust, setOpenCust }) {
   );
 }
 
+/* ── Ansatte & provision ── */
+function StaffView({ sales, config, cur, wide }) {
+  const dk = wide;
+  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const sub = dk ? "#9ca3af" : "#78716c";
+  const today = new Date().toISOString().slice(0, 10);
+  const isToday = (t) => new Date(t.at).toISOString().slice(0, 10) === today;
+
+  const map = {};
+  (config.staff || []).forEach((p) => { map[p.id] = { id: p.id, name: p.name, commissionPct: +p.commissionPct || 0, trades: 0, tradesToday: 0, commission: 0, commissionToday: 0, total: 0 }; });
+  sales.forEach((t) => {
+    if (!t.sellerId) return;
+    if (!map[t.sellerId]) map[t.sellerId] = { id: t.sellerId, name: t.sellerName || t.sellerId, commissionPct: 0, trades: 0, tradesToday: 0, commission: 0, commissionToday: 0, total: 0 };
+    const p = map[t.sellerId];
+    p.trades += 1; p.total += t.total; p.commission += (t.commission || 0);
+    if (isToday(t)) { p.tradesToday += 1; p.commissionToday += (t.commission || 0); }
+  });
+  const list = Object.values(map).sort((a, b) => b.commission - a.commission);
+  const wrap = "pb-10 " + (dk ? "px-8 pt-6 mx-auto " : "px-3 pt-3 ") + (dk ? "text-white" : "");
+  const wrapStyle = dk ? { maxWidth: 900 } : {};
+
+  return (
+    <div className={wrap} style={wrapStyle}>
+      {list.length === 0 && <div className="text-sm py-6 text-center" style={{ color: sub }}>Ingen ansatte oprettet endnu. Tilføj dem under Rediger → Ansatte &amp; provision.</div>}
+      <div className={wide ? "grid gap-3" : "space-y-2"} style={wide ? { gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" } : {}}>
+        {list.map((p) => (
+          <div key={p.id} className="rounded-xl border p-3" style={box}>
+            <div className="flex items-center justify-between">
+              <div className="font-black" style={{ color: dk ? "white" : INK }}>{p.name}</div>
+              <span className="px-2 py-0.5 rounded-full text-[11px] font-bold" style={{ background: dk ? "rgba(245,179,1,.15)" : "#fdf3e7", color: dk ? GOLD : GOLD_D }}>{p.commissionPct}%</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              <div>
+                <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>Provision i dag</div>
+                <div className="text-base font-black tabular-nums" style={{ color: dk ? "#4ade80" : GREEN }}>{fmt(p.commissionToday)} {cur}</div>
+              </div>
+              <div>
+                <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>Provision i alt</div>
+                <div className="text-base font-black tabular-nums" style={{ color: dk ? GOLD : INK }}>{fmt(p.commission)} {cur}</div>
+              </div>
+            </div>
+            <div className="text-[11px] mt-2" style={{ color: sub }}>{p.tradesToday} handler i dag · {p.trades} i alt</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /* ── Kvittering ── */
 function ReceiptModal({ trade, config, onClose }) {
   const cur = config.currency;
@@ -641,6 +766,12 @@ function ReceiptModal({ trade, config, onClose }) {
             <div className="flex justify-between items-baseline mt-1 text-xs">
               <span className="text-stone-500">Kunde {trade.custId}</span>
               <span className="font-bold" style={{ color: GOLD_D }}>+{trade.points} point</span>
+            </div>
+          )}
+          {trade.sellerName && (
+            <div className="flex justify-between items-baseline mt-1 text-xs">
+              <span className="text-stone-500">Solgt af {trade.sellerName}</span>
+              {trade.commission > 0 && <span className="font-bold" style={{ color: GOLD_D }}>+{fmt(trade.commission)} {cur} provision</span>}
             </div>
           )}
         </div>
@@ -716,6 +847,16 @@ function PriceSettings({ config, save, close, wide }) {
   const [mgrPin, setMgrPin] = useState(config.managerPin || "0000");
   const [pointsPer, setPointsPer] = useState(config.pointsPer || 1000);
   const [levels, setLevels] = useState(config.levels || [{ name: "Bronze", min: 0 }]);
+  const [staffList, setStaffList] = useState(config.staff || []);
+  const [newStaff, setNewStaff] = useState({ name: "", pin: "", commissionPct: "" });
+  const addStaff = () => {
+    if (!newStaff.name.trim() || !newStaff.pin.trim()) return;
+    setStaffList([...staffList, { id: "s" + Date.now(), name: newStaff.name.trim(), pin: newStaff.pin.trim(), commissionPct: +newStaff.commissionPct || 0 }]);
+    setNewStaff({ name: "", pin: "", commissionPct: "" });
+  };
+  const updStaff = (id, field, val) =>
+    setStaffList(staffList.map((p) => (p.id === id ? { ...p, [field]: field === "commissionPct" ? +val || 0 : val } : p)));
+  const delStaff = (id) => setStaffList(staffList.filter((p) => p.id !== id));
   const [catList, setCatList] = useState(config.categories || ["Materialer"]);
   const [newCat, setNewCat] = useState("");
   const addCat = () => {
@@ -747,7 +888,7 @@ function PriceSettings({ config, save, close, wide }) {
     setList([...list, { id: "m" + Date.now(), name: nm.name.trim(), price: +nm.price || 0, sell: +nm.sell || +nm.price || 0, unit: nm.unit.trim() || "stk.", cat: catList[0] || "Materialer" }]);
     setNm({ name: "", price: "", sell: "", unit: "stk." });
   };
-  const commit = () => save({ shopName: shopName.trim() || "Udbetalingsberegner", currency: currency.trim() || "kr.", ownerPin: pin.trim() || "1234", managerPin: mgrPin.trim() || "0000", categories: catList.length ? catList : ["Materialer"], pointsPer: +pointsPer || 1000, levels, materials: list });
+  const commit = () => save({ shopName: shopName.trim() || "Udbetalingsberegner", currency: currency.trim() || "kr.", ownerPin: pin.trim() || "1234", managerPin: mgrPin.trim() || "0000", categories: catList.length ? catList : ["Materialer"], pointsPer: +pointsPer || 1000, levels, staff: staffList, materials: list });
 
   const dk = wide;
   const inp = "rounded-lg border px-2 py-2 text-sm " + (dk ? "" : "border-stone-300 bg-white");
@@ -812,6 +953,41 @@ function PriceSettings({ config, save, close, wide }) {
           ))}
           <button onClick={() => setLevels([...levels, { name: "Nyt niveau", min: 0 }])}
             className="text-xs font-bold flex items-center gap-1" style={{ color: dk ? GOLD : BLUE }}><Plus size={14} /> Tilføj niveau</button>
+        </div>
+      </div>
+      <div>
+        <div className="text-xs font-black uppercase tracking-wider mb-2" style={{ color: dk ? GOLD : BLUE }}>Ansatte &amp; provision</div>
+        <div className="text-[11px] mb-2" style={lab}>Hver ansat får sin egen PIN. Ved et salg skal de taste den, så salget bliver koblet til dem — og provisionen beregnes automatisk af det udbetalte beløb.</div>
+        <div className="space-y-2">
+          {staffList.map((p) => (
+            <div key={p.id} className="rounded-xl border p-2 flex items-center gap-2" style={cardBg}>
+              <input value={p.name} onChange={(e) => updStaff(p.id, "name", e.target.value)}
+                placeholder="Navn" className={inp + " flex-1 min-w-0 font-semibold"} style={inpStyle} />
+              <input value={p.pin} onChange={(e) => updStaff(p.id, "pin", e.target.value)}
+                placeholder="PIN" className={inp + " w-20"} style={inpStyle} />
+              <div className="flex items-center gap-1 shrink-0">
+                <input type="number" inputMode="numeric" value={p.commissionPct} onChange={(e) => updStaff(p.id, "commissionPct", e.target.value)}
+                  className={inp + " w-16 font-bold"} style={inpStyle} />
+                <span className="text-xs font-bold" style={lab}>%</span>
+              </div>
+              <button onClick={() => delStaff(p.id)} className="text-stone-300 active:text-red-500 p-1 shrink-0"><Trash2 size={16} /></button>
+            </div>
+          ))}
+        </div>
+        <div className="rounded-xl border-2 border-dashed p-2 mt-2 flex items-center gap-2" style={{ borderColor: dk ? "#444" : "#d6d3d1" }}>
+          <input placeholder="Navn" value={newStaff.name} onChange={(e) => setNewStaff({ ...newStaff, name: e.target.value })}
+            className={inp + " flex-1 min-w-0"} style={inpStyle} />
+          <input placeholder="PIN" value={newStaff.pin} onChange={(e) => setNewStaff({ ...newStaff, pin: e.target.value })}
+            className={inp + " w-20"} style={inpStyle} />
+          <div className="flex items-center gap-1 shrink-0">
+            <input type="number" inputMode="numeric" placeholder="0" value={newStaff.commissionPct} onChange={(e) => setNewStaff({ ...newStaff, commissionPct: e.target.value })}
+              className={inp + " w-16"} style={inpStyle} />
+            <span className="text-xs font-bold" style={lab}>%</span>
+          </div>
+          <button onClick={addStaff} disabled={!newStaff.name.trim() || !newStaff.pin.trim()}
+            className="w-9 h-9 rounded-lg text-white flex items-center justify-center shrink-0 disabled:opacity-30" style={{ background: GREEN }}>
+            <Plus size={18} />
+          </button>
         </div>
       </div>
       <div>

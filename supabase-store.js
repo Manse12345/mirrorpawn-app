@@ -6,8 +6,8 @@
 //  Sæt dine to offentlige værdier her (fra Supabase →
 //  Project Settings → API):
 // ============================================================
-const SUPABASE_URL  = "https://pfjsxrexbxbhzqvuolwj.supabase.co";       // fx https://abcd.supabase.co
-const SUPABASE_ANON = "sb_publishable_OFx0Ekrn6CJ33jHjmcDXeQ_WXeOvMNW";   // den lange "anon public"-nøgle
+const SUPABASE_URL  = "https://pfjsxrexbxbhzqvuolwj.supabase.co";
+const SUPABASE_ANON = "sb_publishable_OFx0Ekrn6CJ33jHjmcDXeQ_WXeOvMNW";
 
 const H = {
   "Content-Type": "application/json",
@@ -42,7 +42,7 @@ export async function loadSales(limit = 500) {
   return rest(`sales?order=at.desc&limit=${limit}`);
 }
 export async function insertSale(trade) {
-  // trade: { at, custId, lines, total, sellTotal, profit, points }
+  // trade: { at, custId, lines, total, sellTotal, profit, points, sellerId, sellerName, commission }
   const row = {
     at: new Date(trade.at).toISOString(),
     cust_id: trade.custId || null,
@@ -51,6 +51,9 @@ export async function insertSale(trade) {
     sell_total: trade.sellTotal,
     profit: trade.profit,
     points: trade.points,
+    seller_id: trade.sellerId || null,
+    seller_name: trade.sellerName || null,
+    commission: trade.commission || 0,
   };
   const [saved] = await rest(`sales`, {
     method: "POST",
