@@ -83,7 +83,7 @@ export async function loadSales(limit = 500) {
   return data;
 }
 export async function insertSale(trade) {
-  // trade: { at, custId, lines, total, sellTotal, profit, points, sellerId, sellerName, commission }
+  // trade: { at, custId, lines, total, sellTotal, profit, points, sellerId, sellerName, commission, type }
   const row = {
     at: new Date(trade.at).toISOString(),
     cust_id: trade.custId || null,
@@ -95,6 +95,7 @@ export async function insertSale(trade) {
     seller_id: trade.sellerId || null,
     seller_name: trade.sellerName || null,
     commission: trade.commission || 0,
+    type: trade.type || "buy",
   };
   const { data, error } = await supabase.from("sales").insert(row).select().single();
   if (error) throw error;
@@ -104,6 +105,28 @@ export async function insertSale(trade) {
 // ---- Hændelser (botten poster dem) ----
 export async function logEvent(kind, payload) {
   const { error } = await supabase.from("events").insert({ kind, payload });
+  if (error) throw error;
+}
+
+// ---- Lager ----
+export async function loadInventory() {
+  const { data, error } = await supabase.from("inventory").select("material_id, qty");
+  if (error) throw error;
+  const map = {};
+  (data || []).forEach((r) => { map[r.material_id] = +r.qty; });
+  return map;
+}
+// Tæller lageret op/ned atomisk (fx +qty ved køb, -qty ved salg)
+export async function adjustInventory(materialId, delta) {
+  const { data, error } = await supabase.rpc("adjust_inventory", { p_material_id: materialId, p_delta: delta });
+  if (error) throw error;
+  return +data;
+}
+// Sætter lagerantallet direkte (bruges til opstart/manuel rettelse)
+export async function setInventoryQty(materialId, qty) {
+  const { error } = await supabase
+    .from("inventory")
+    .upsert({ material_id: materialId, qty, updated_at: new Date().toISOString() });
   if (error) throw error;
 }
 

@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, Lock } from "lucide-react";
+import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, Lock, Package, ArrowLeftRight } from "lucide-react";
 import {
   loadConfig, saveConfig as sbSaveConfig, loadSales as sbLoadSales, insertSale, logEvent,
   signIn, signOut, getSession, onAuthChange, loadMyProfile, loadAllProfiles,
   createStaff, updateStaff, deleteStaff,
+  loadInventory, adjustInventory, setInventoryQty,
 } from "./supabase-store.js";
 
 /* ── Pawnshop-beregner ────────────────────────────────────────────
@@ -120,6 +121,10 @@ export default function App() {
   const wide = mode === "pc" ? true : mode === "mobil" ? false : autoWide;
   const [staffList, setStaffList] = useState([]);
   const refreshStaff = async () => { try { setStaffList(await loadAllProfiles()); } catch (e) {} };
+  const [inventory, setInventory] = useState({}); // material_id -> qty
+  const loadInventoryFn = async () => { try { setInventory(await loadInventory()); } catch (e) {} };
+  const [tradeMode, setTradeMode] = useState("buy"); // buy | sell
+  const switchTradeMode = (m) => { if (m !== tradeMode) { setTradeMode(m); setCart({}); } };
 
   const canManageStore = !!profile && (profile.role === "ejer" || profile.role === "manager");
   const isOwner = !!profile && profile.role === "ejer";
@@ -152,20 +157,21 @@ export default function App() {
         id: "t" + r.id, at: new Date(r.at).getTime(), custId: r.cust_id || "",
         points: r.points, lines: r.lines, total: +r.total, sellTotal: +r.sell_total, profit: +r.profit,
         sellerId: r.seller_id || "", sellerName: r.seller_name || "", commission: +r.commission || 0,
+        type: r.type || "buy",
       })));
     } catch (e) {}
   };
   // sletning/rydning håndteres via DB separat; behold lokalt fallback
   const saveSales = async (next) => { setSales(next); };
   const editingRef = useRef(false);
-  useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); } }, [profile]);
+  useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); } }, [profile]);
   useEffect(() => {
     if (!profile) return;
     const poll = setInterval(() => {
       // hent nye priser i baggrunden — men aldrig mens ejeren redigerer
-      if (!editingRef.current && document.visibilityState === "visible") { loadConfigFn(false); loadSalesFn(); }
+      if (!editingRef.current && document.visibilityState === "visible") { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); }
     }, 12000);
-    const onVis = () => { if (document.visibilityState === "visible" && !editingRef.current) { loadConfigFn(false); loadSalesFn(); } };
+    const onVis = () => { if (document.visibilityState === "visible" && !editingRef.current) { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); } };
     document.addEventListener("visibilitychange", onVis);
     return () => { clearInterval(poll); document.removeEventListener("visibilitychange", onVis); };
   }, [profile]);
@@ -195,7 +201,7 @@ export default function App() {
   const setQty = (m, qty) => {
     const next = { ...cart };
     if (qty <= 0) delete next[id(m)];
-    else next[id(m)] = { qty, price: cart[id(m)]?.price ?? m.price };
+    else next[id(m)] = { qty, price: cart[id(m)]?.price ?? (tradeMode === "sell" ? (m.sell ?? m.price) : m.price) };
     setCart(next);
   };
   const setPrice = (mid, price) => setCart({ ...cart, [mid]: { ...cart[mid], price } });
@@ -206,11 +212,17 @@ export default function App() {
     .map((m) => {
       const qty = cart[m.id].qty, price = cart[m.id].price;
       const sell = m.sell ?? m.price;
-      return { m, qty, price, sum: qty * price, sellSum: qty * sell };
+      const stock = inventory[m.id] || 0;
+      return { m, qty, price, sum: qty * price, sellSum: qty * sell, costSum: qty * m.price, stock };
     });
   const total = lines.reduce((a, l) => a + l.sum, 0);
-  const sellTotal = lines.reduce((a, l) => a + l.sellSum, 0);
-  const profit = sellTotal - total;
+  const resaleValue = lines.reduce((a, l) => a + l.sellSum, 0);
+  const costBasis = lines.reduce((a, l) => a + l.costSum, 0);
+  const sellTotal = tradeMode === "sell" ? costBasis : resaleValue;
+  const profit = tradeMode === "sell" ? (total - costBasis) : (resaleValue - total);
+  const payLabel = tradeMode === "sell" ? "Kunden skal betale" : "Kunden skal have";
+  const secondaryLabel = tradeMode === "sell" ? "Kostpris" : "Videresalg";
+  const profitLabel = tradeMode === "sell" ? "Fortjeneste" : "Avance";
 
   const shown = materials.filter((m) =>
     m.name.toLowerCase().includes(q.trim().toLowerCase()) &&
@@ -220,22 +232,31 @@ export default function App() {
 
   const saveTrade = () => {
     if (lines.length === 0) return;
-    const pts = Math.floor(total / (config.pointsPer || 1000));
+    const pts = tradeMode === "buy" ? Math.floor(total / (config.pointsPer || 1000)) : 0;
     const trade = {
       id: "t" + Date.now(), at: Date.now(),
       custId: custId.trim(),
       points: pts,
-      lines: lines.map((l) => ({ name: l.m.name, qty: l.qty, price: l.price, unit: l.m.unit, sum: l.sum, sellSum: l.sellSum })),
+      type: tradeMode,
+      lines: lines.map((l) => ({ id: l.m.id, name: l.m.name, qty: l.qty, price: l.price, unit: l.m.unit, sum: l.sum, sellSum: l.sellSum })),
       total, sellTotal, profit,
       sellerId: profile.id, sellerName: profile.name, commission: 0,
     };
-    // beregn evt. niveau-skift FØR vs EFTER for kunden
+    // beregn evt. niveau-skift FØR vs EFTER for kunden (kun ved køb — points gives ikke ved salg)
     const id = custId.trim();
     let prevPoints = 0;
     if (id) sales.forEach((t) => { if ((t.custId || "") === id) prevPoints += (t.points || 0); });
-    const wasNew = id && prevPoints === 0;
+    const wasNew = tradeMode === "buy" && id && prevPoints === 0;
     const beforeLvl = levelFor(prevPoints, config.levels).cur.name;
     const afterLvl = levelFor(prevPoints + pts, config.levels).cur.name;
+
+    // lager: op ved køb, ned ved salg
+    const invDelta = tradeMode === "buy" ? 1 : -1;
+    setInventory((prev) => {
+      const next = { ...prev };
+      trade.lines.forEach((l) => { next[l.id] = (next[l.id] || 0) + invDelta * l.qty; });
+      return next;
+    });
 
     setSales([trade, ...sales].slice(0, 500));
     setReceipt(trade);
@@ -247,6 +268,7 @@ export default function App() {
     (async () => {
       try {
         await insertSale(trade);
+        await Promise.all(trade.lines.map((l) => adjustInventory(l.id, invDelta * l.qty)));
         if (id && wasNew) await logEvent("newcustomer", { custId: id });
         if (id && afterLvl !== beforeLvl) await logEvent("levelup", { custId: id, level: afterLvl, points: prevPoints + pts });
       } catch (e) {}
@@ -292,6 +314,11 @@ export default function App() {
             style={view === "kunder" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
             <User size={16} /> Kunder
           </button>
+          <button onClick={() => { setView(view === "lager" ? "beregner" : "lager"); setShowSettings(false); }}
+            className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
+            style={view === "lager" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+            <Package size={16} /> Lager
+          </button>
           {isOwner && (
             <button onClick={() => { setView(view === "ansatte" ? "beregner" : "ansatte"); setShowSettings(false); }}
               className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
@@ -322,6 +349,12 @@ export default function App() {
 
       {view === "kunder" && !showSettings ? (
         <Customers sales={sales} config={config} cur={cur} wide={wide} openCust={openCust} setOpenCust={setOpenCust} />
+      ) : view === "lager" && !showSettings ? (
+        <InventoryView materials={materials} inventory={inventory} cur={cur} wide={wide} canEdit={canManageStore}
+          onSetQty={async (mid, qty) => {
+            setInventory((prev) => ({ ...prev, [mid]: qty }));
+            try { await setInventoryQty(mid, qty); } catch (e) {}
+          }} />
       ) : view === "ansatte" && !showSettings && isOwner ? (
         <StaffAdmin staffList={staffList} refresh={refreshStaff} myId={profile.id} wide={wide} />
       ) : view === "log" && !showSettings ? (
@@ -332,6 +365,16 @@ export default function App() {
       ) : (
         <div className={wide ? "flex gap-5 px-8 pt-6 items-start" : "px-3 pt-3 space-y-2"}>
           <div className={wide ? "flex-1 min-w-0 space-y-3" : "space-y-2"}>
+          <div className="flex rounded-lg overflow-hidden border text-sm font-black" style={{ borderColor: wide ? "#3a3a3a" : "#d6d3d1" }}>
+            <button onClick={() => switchTradeMode("buy")} className="flex-1 flex items-center justify-center gap-1.5 py-2.5"
+              style={tradeMode === "buy" ? { background: GOLD, color: INK } : { background: wide ? PANEL : "white", color: wide ? "#9ca3af" : "#78716c" }}>
+              <ArrowLeftRight size={15} /> Køb fra kunde
+            </button>
+            <button onClick={() => switchTradeMode("sell")} className="flex-1 flex items-center justify-center gap-1.5 py-2.5"
+              style={tradeMode === "sell" ? { background: GREEN, color: "white" } : { background: wide ? PANEL : "white", color: wide ? "#9ca3af" : "#78716c" }}>
+              <Package size={15} /> Sælg til kunde
+            </button>
+          </div>
           <div className="relative">
             <Search size={15} className="absolute left-2.5 top-2.5 text-stone-400" />
             <input placeholder="Søg materiale…" value={q} onChange={(e) => setQ(e.target.value)}
@@ -364,6 +407,8 @@ export default function App() {
             const c = cart[m.id];
             const active = c?.qty > 0;
             const dark = wide;
+            const stock = inventory[m.id] || 0;
+            const oversell = tradeMode === "sell" && active && c.qty > stock;
             return (
               <div key={m.id} className="rounded-xl border p-3"
                 style={dark
@@ -374,6 +419,7 @@ export default function App() {
                     <div className="font-bold" style={{ color: dark ? "white" : INK }}>{m.name}</div>
                     <div className="text-[11px]" style={{ color: dark ? "#9ca3af" : "#a8a29e" }}>
                       Køb {fmt(m.price)} · <span style={{ color: GOLD }}>Salg {fmt(m.sell ?? m.price)}</span> {cur} pr. {m.unit || "stk."}
+                      {" · "}Lager: <span style={{ color: oversell ? "#f87171" : (stock <= 0 ? "#f87171" : (dark ? "#9ca3af" : "#a8a29e")), fontWeight: oversell ? 700 : 400 }}>{stock}</span>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -405,6 +451,11 @@ export default function App() {
                     </div>
                   </div>
                 )}
+                {oversell && (
+                  <div className="text-[11px] font-bold mt-1.5" style={{ color: "#f87171" }}>
+                    ⚠ Kun {stock} på lager — salget kan stadig gemmes, men lageret går i minus.
+                  </div>
+                )}
               </div>
             );
           })}
@@ -427,12 +478,12 @@ export default function App() {
                 )}
                 {lines.length > 0 && (
                   <div className="px-4 pt-2 flex justify-between text-xs" style={{ color: "#9ca3af" }}>
-                    <span>Videresalg: <span className="font-bold text-white">{fmt(sellTotal)} {cur}</span></span>
-                    <span>Avance: <span className="font-black" style={{ color: profit >= 0 ? "#4ade80" : "#f87171" }}>{fmt(profit)} {cur}</span></span>
+                    <span>{secondaryLabel}: <span className="font-bold text-white">{fmt(sellTotal)} {cur}</span></span>
+                    <span>{profitLabel}: <span className="font-black" style={{ color: profit >= 0 ? "#4ade80" : "#f87171" }}>{fmt(profit)} {cur}</span></span>
                   </div>
                 )}
                 <div className="px-4 py-4">
-                  <div className="text-[10px] uppercase tracking-widest font-bold" style={{ color: "#9ca3af" }}>Kunden skal have</div>
+                  <div className="text-[10px] uppercase tracking-widest font-bold" style={{ color: "#9ca3af" }}>{payLabel}</div>
                   <div className="text-4xl font-black tabular-nums" style={{ color: lines.length ? GOLD : "#555" }}>
                     {fmt(total)} <span className="text-xl">{cur}</span>
                   </div>
@@ -441,7 +492,7 @@ export default function App() {
                     <input value={custId} onChange={(e) => setCustId(e.target.value)} placeholder="valgfrit"
                       className="w-full mt-1 rounded-lg border px-3 py-2 text-sm font-bold"
                       style={{ borderColor: "#444", background: "#111", color: "white" }} />
-                    {custId.trim() && lines.length > 0 && (
+                    {tradeMode === "buy" && custId.trim() && lines.length > 0 && (
                       <div className="text-[11px] mt-1" style={{ color: GOLD }}>
                         + {Math.floor(total / (config.pointsPer || 1000))} point til {custId.trim()}
                       </div>
@@ -451,8 +502,8 @@ export default function App() {
                     <div className="mt-2 space-y-2">
                       <button onClick={() => saveTrade()}
                         className="w-full flex items-center justify-center gap-1.5 px-4 py-3 rounded-xl font-black text-base"
-                        style={{ background: GOLD, color: INK }}>
-                        <Save size={18} /> Gem handel &amp; kvittering
+                        style={{ background: tradeMode === "sell" ? GREEN : GOLD, color: tradeMode === "sell" ? "white" : INK }}>
+                        <Save size={18} /> {tradeMode === "sell" ? "Gem salg & kvittering" : "Gem handel & kvittering"}
                       </button>
                       <button onClick={() => setCart({})}
                         className="w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl font-bold text-sm"
@@ -485,8 +536,8 @@ export default function App() {
           )}
           {lines.length > 0 && (
             <div className="px-4 pt-1 flex justify-between text-xs">
-              <span className="text-stone-500">Videresalg: <span className="font-bold text-stone-700">{fmt(sellTotal)} {cur}</span></span>
-              <span className="text-stone-500">Din avance: <span className="font-black" style={{ color: profit >= 0 ? GREEN : RED }}>{fmt(profit)} {cur}</span></span>
+              <span className="text-stone-500">{secondaryLabel}: <span className="font-bold text-stone-700">{fmt(sellTotal)} {cur}</span></span>
+              <span className="text-stone-500">{profitLabel}: <span className="font-black" style={{ color: profit >= 0 ? GREEN : RED }}>{fmt(profit)} {cur}</span></span>
             </div>
           )}
           {lines.length > 0 && (
@@ -497,7 +548,7 @@ export default function App() {
           )}
           <div className="px-4 py-3 flex items-center justify-between">
             <div>
-              <div className="text-[10px] uppercase tracking-widest font-bold text-stone-400">Kunden skal have</div>
+              <div className="text-[10px] uppercase tracking-widest font-bold text-stone-400">{payLabel}</div>
               <div className="text-3xl font-black tabular-nums" style={{ color: lines.length ? GREEN : "#a8a29e" }}>
                 {fmt(total)} <span className="text-lg">{cur}</span>
               </div>
@@ -646,6 +697,76 @@ function Customers({ sales, config, cur, wide, openCust, setOpenCust }) {
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/* ── Lager ── */
+function InventoryView({ materials, inventory, cur, wide, canEdit, onSetQty }) {
+  const dk = wide;
+  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const sub = dk ? "#9ca3af" : "#78716c";
+  const [q, setQ] = useState("");
+  const [editing, setEditing] = useState(null);
+  const [editVal, setEditVal] = useState("");
+  const wrap = "pb-10 " + (dk ? "px-8 pt-6 mx-auto " : "px-3 pt-3 ") + (dk ? "text-white" : "");
+  const wrapStyle = dk ? { maxWidth: 900 } : {};
+
+  const shown = materials.filter((m) => m.name.toLowerCase().includes(q.trim().toLowerCase()));
+  const totalValue = materials.reduce((a, m) => a + (inventory[m.id] || 0) * m.price, 0);
+  const totalUnits = materials.reduce((a, m) => a + (inventory[m.id] || 0), 0);
+
+  const startEdit = (m) => { setEditing(m.id); setEditVal(String(inventory[m.id] || 0)); };
+  const commitEdit = (m) => { onSetQty(m.id, Math.max(0, +editVal || 0)); setEditing(null); };
+
+  return (
+    <div className={wrap} style={wrapStyle}>
+      <div className="grid grid-cols-2 gap-2 mb-3">
+        <div className="rounded-xl border p-3" style={box}>
+          <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>Varer på lager</div>
+          <div className="text-lg font-black tabular-nums" style={{ color: dk ? "white" : INK }}>{fmt(totalUnits)} stk.</div>
+        </div>
+        <div className="rounded-xl border p-3" style={box}>
+          <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>Lagerværdi (kostpris)</div>
+          <div className="text-lg font-black tabular-nums" style={{ color: dk ? GOLD : INK }}>{fmt(totalValue)} {cur}</div>
+        </div>
+      </div>
+      <div className="relative mb-3">
+        <Search size={15} className="absolute left-2.5 top-2.5" style={{ color: sub }} />
+        <input placeholder="Søg materiale…" value={q} onChange={(e) => setQ(e.target.value)}
+          className="w-full rounded-lg border pl-8 pr-3 py-2 text-sm"
+          style={dk ? { borderColor: "#3a3a3a", background: PANEL, color: "white" } : { borderColor: "#d6d3d1", background: "white" }} />
+      </div>
+      <div className="space-y-2">
+        {shown.map((m) => {
+          const qty = inventory[m.id] || 0;
+          return (
+            <div key={m.id} className="rounded-xl border p-3 flex items-center justify-between" style={box}>
+              <div>
+                <div className="font-bold" style={{ color: dk ? "white" : INK }}>{m.name}</div>
+                <div className="text-[11px]" style={{ color: sub }}>Værdi: {fmt(qty * m.price)} {cur}</div>
+              </div>
+              {editing === m.id ? (
+                <div className="flex items-center gap-1.5">
+                  <input type="number" inputMode="numeric" autoFocus value={editVal} onChange={(e) => setEditVal(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && commitEdit(m)}
+                    className="w-20 rounded-lg border px-2 py-1.5 text-sm font-bold text-center"
+                    style={dk ? { borderColor: "#444", background: "#111", color: "white" } : { borderColor: "#d6d3d1" }} />
+                  <button onClick={() => commitEdit(m)} className="px-2 py-1.5 rounded-lg font-bold text-xs" style={{ background: GREEN, color: "white" }}>Gem</button>
+                </div>
+              ) : (
+                <button onClick={() => canEdit && startEdit(m)} className="text-right" disabled={!canEdit}>
+                  <div className="text-xl font-black tabular-nums" style={{ color: qty <= 0 ? "#f87171" : (dk ? GOLD : INK) }}>
+                    {fmt(qty)} <span className="text-xs font-bold" style={{ color: sub }}>stk.</span>
+                  </div>
+                  {canEdit && <div className="text-[10px] font-bold" style={{ color: dk ? GOLD : BLUE }}>Ret</div>}
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {!canEdit && <div className="text-[11px] mt-3" style={{ color: sub }}>Kun ejer/manager kan rette lagerantal manuelt.</div>}
     </div>
   );
 }
@@ -827,18 +948,23 @@ function ReceiptModal({ trade, config, onClose }) {
             </div>
           ))}
           <div className="flex justify-between items-baseline mt-3 pt-2 border-t-2 border-stone-200">
-            <span className="font-black uppercase text-xs text-stone-500">Udbetalt</span>
+            <span className="font-black uppercase text-xs text-stone-500">{trade.type === "sell" ? "Modtaget" : "Udbetalt"}</span>
             <span className="text-2xl font-black tabular-nums" style={{ color: GREEN }}>{fmt(trade.total)} {cur}</span>
           </div>
-          {trade.custId && (
+          {trade.custId && trade.type !== "sell" && (
             <div className="flex justify-between items-baseline mt-1 text-xs">
               <span className="text-stone-500">Kunde {trade.custId}</span>
               <span className="font-bold" style={{ color: GOLD_D }}>+{trade.points} point</span>
             </div>
           )}
+          {trade.custId && trade.type === "sell" && (
+            <div className="flex justify-between items-baseline mt-1 text-xs">
+              <span className="text-stone-500">Kunde {trade.custId}</span>
+            </div>
+          )}
           {trade.sellerName && (
             <div className="flex justify-between items-baseline mt-1 text-xs">
-              <span className="text-stone-500">Solgt af {trade.sellerName}</span>
+              <span className="text-stone-500">{trade.type === "sell" ? "Solgt af" : "Købt af"} {trade.sellerName}</span>
             </div>
           )}
         </div>
@@ -853,20 +979,37 @@ function ReceiptModal({ trade, config, onClose }) {
 
 /* ── Salgs-dagbog ── */
 function SalesLog({ sales, cur, wide, onClear, onDelete, role }) {
-  const today = new Date().toISOString().slice(0, 10);
-  const isToday = (t) => new Date(t.at).toISOString().slice(0, 10) === today;
-  const todays = sales.filter(isToday);
-  const sum = (arr, f) => arr.reduce((a, x) => a + f(x), 0);
+  const [period, setPeriod] = useState("dag"); // dag | uge | måned | alt
   const dk = wide;
   const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
+  const sum = (arr, f) => arr.reduce((a, x) => a + f(x), 0);
+
+  const now = Date.now();
+  const cutoff = period === "dag" ? new Date().setHours(0, 0, 0, 0)
+    : period === "uge" ? now - 7 * 86400000
+    : period === "måned" ? now - 30 * 86400000
+    : 0;
+  const inPeriod = sales.filter((t) => t.at >= cutoff);
+  const buys = inPeriod.filter((t) => t.type !== "sell");
+  const sells = inPeriod.filter((t) => t.type === "sell");
+  const udgifter = sum(buys, (t) => t.total);
+  const indtaegter = sum(sells, (t) => t.total);
+  const overskud = indtaegter - udgifter;
 
   return (
     <div className={"pb-10 " + (dk ? "px-8 pt-6 mx-auto text-white" : "px-3 pt-3")} style={dk ? { maxWidth: 900 } : {}}>
-      <div className="grid grid-cols-3 gap-2 mb-3">
-        {[["Handler i dag", todays.length, GOLD],
-          ["Udbetalt i dag", fmt(sum(todays, (t) => t.total)) + " " + cur, dk ? "#f87171" : RED],
-          ["Avance i dag", fmt(sum(todays, (t) => t.profit)) + " " + cur, dk ? "#4ade80" : GREEN]].map(([l, v, c]) => (
+      <div className="flex rounded-lg overflow-hidden border text-xs font-black mb-3" style={{ borderColor: dk ? "#3a3a3a" : "#d6d3d1" }}>
+        {[["dag", "I dag"], ["uge", "7 dage"], ["måned", "30 dage"], ["alt", "Alt"]].map(([v, l]) => (
+          <button key={v} onClick={() => setPeriod(v)} className="flex-1 py-2"
+            style={period === v ? { background: GOLD, color: INK } : { background: dk ? PANEL : "white", color: sub }}>{l}</button>
+        ))}
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+        {[["Handler", inPeriod.length, dk ? "white" : INK],
+          ["Udgifter (køb)", fmt(udgifter) + " " + cur, dk ? "#f87171" : RED],
+          ["Indtægter (salg)", fmt(indtaegter) + " " + cur, dk ? "#4ade80" : GREEN],
+          ["Overskud", fmt(overskud) + " " + cur, overskud >= 0 ? (dk ? "#4ade80" : GREEN) : (dk ? "#f87171" : RED)]].map(([l, v, c]) => (
           <div key={l} className="rounded-xl border p-3" style={box}>
             <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>{l}</div>
             <div className="text-lg font-black tabular-nums" style={{ color: c }}>{v}</div>
@@ -874,23 +1017,27 @@ function SalesLog({ sales, cur, wide, onClear, onDelete, role }) {
         ))}
       </div>
       <div className="flex items-center justify-between mb-2">
-        <div className="text-xs font-black uppercase tracking-wider" style={{ color: dk ? GOLD : BLUE }}>Alle handler</div>
+        <div className="text-xs font-black uppercase tracking-wider" style={{ color: dk ? GOLD : BLUE }}>Handler i perioden</div>
         {role === "ejer" && sales.length > 0 && (
           <button onClick={onClear} className="text-[11px] font-bold" style={{ color: dk ? "#f87171" : RED }}>Ryd alle</button>
         )}
       </div>
-      {sales.length === 0 && <div className="text-sm py-6 text-center" style={{ color: sub }}>Ingen gemte handler endnu. Tryk "Gem handel" efter en beregning.</div>}
+      {inPeriod.length === 0 && <div className="text-sm py-6 text-center" style={{ color: sub }}>Ingen handler i denne periode.</div>}
       <div className="space-y-2">
-        {sales.map((t) => {
+        {inPeriod.map((t) => {
           const d = new Date(t.at);
+          const isSell = t.type === "sell";
           return (
             <div key={t.id} className="rounded-xl border p-3" style={box}>
               <div className="flex items-center justify-between">
-                <div className="text-[11px]" style={{ color: sub }}>
+                <div className="text-[11px] flex items-center gap-1.5" style={{ color: sub }}>
+                  <span className="px-1.5 py-0.5 rounded font-bold" style={isSell ? { background: "rgba(74,222,128,.15)", color: dk ? "#4ade80" : GREEN } : { background: "rgba(245,179,1,.15)", color: dk ? GOLD : GOLD_D }}>
+                    {isSell ? "🏷️ Salg" : "💰 Køb"}
+                  </span>
                   {d.toLocaleDateString("da-DK")} · {d.toTimeString().slice(0, 5)}
                 </div>
                 <div className="flex items-center gap-3">
-                  <span className="font-black tabular-nums" style={{ color: dk ? GOLD : INK }}>{fmt(t.total)} {cur}</span>
+                  <span className="font-black tabular-nums" style={{ color: isSell ? (dk ? "#4ade80" : GREEN) : (dk ? "#f87171" : RED) }}>{fmt(t.total)} {cur}</span>
                   <button onClick={() => onDelete(t.id)} className="p-1" style={{ color: dk ? "#666" : "#d6d3d1" }}><Trash2 size={14} /></button>
                 </div>
               </div>
