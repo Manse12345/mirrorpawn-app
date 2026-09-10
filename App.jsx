@@ -67,6 +67,27 @@ const DEFAULT_CONFIG = {
 const fmt = (n) => (Math.round(n) || 0).toLocaleString("da-DK");
 const PAGE_MAX = 1100; // max-bredde for indholdssider på brede skærme (Kunder/Ansatte/Rediger)
 
+// Antal styk handlet pr. vare (køb + salg lagt sammen), udledt af de handler appen allerede har indlæst
+function computeTradeCounts(sales) {
+  const counts = {};
+  sales.forEach((t) => {
+    (t.lines || []).forEach((l) => {
+      if (!l.id) return;
+      counts[l.id] = (counts[l.id] || 0) + (l.qty || 0);
+    });
+  });
+  return counts;
+}
+// Delt sortering for Hjem og Lager: på lager før udsolgt, derefter flest handlede styk øverst
+function sortByStockThenTrades(list, inventory, tradeCounts) {
+  return [...list].sort((a, b) => {
+    const aOnStock = (inventory[a.id] || 0) > 0 ? 1 : 0;
+    const bOnStock = (inventory[b.id] || 0) > 0 ? 1 : 0;
+    if (aOnStock !== bOnStock) return bOnStock - aOnStock;
+    return (tradeCounts[b.id] || 0) - (tradeCounts[a.id] || 0);
+  });
+}
+
 /* ── Scan bakke: OCR-tekst -> varelinjer -> fuzzy match mod prislisten ── */
 function normalizeOcr(s) {
   return (s || "").toUpperCase().replace(/[^A-ZÆØÅ0-9 ]/g, "").replace(/\s+/g, " ").trim();
@@ -424,25 +445,12 @@ export default function App() {
   const secondaryLabel = tradeMode === "sell" ? "Kostpris" : "Videresalg";
   const profitLabel = tradeMode === "sell" ? "Fortjeneste" : "Avance";
 
-  // Antal styk handlet pr. vare (købt + solgt), udledt af de handler appen allerede har indlæst
-  const tradeCounts = {};
-  sales.forEach((t) => {
-    (t.lines || []).forEach((l) => {
-      if (!l.id) return;
-      tradeCounts[l.id] = (tradeCounts[l.id] || 0) + (l.qty || 0);
-    });
-  });
-
-  const shown = materials
-    .filter((m) =>
+  const tradeCounts = computeTradeCounts(sales);
+  const shown = sortByStockThenTrades(
+    materials.filter((m) =>
       m.name.toLowerCase().includes(q.trim().toLowerCase()) &&
-      (activeCat === "Alle" || (m.cat || "Materialer") === activeCat))
-    .sort((a, b) => {
-      const aOnStock = (inventory[a.id] || 0) > 0 ? 1 : 0;
-      const bOnStock = (inventory[b.id] || 0) > 0 ? 1 : 0;
-      if (aOnStock !== bOnStock) return bOnStock - aOnStock; // på lager før udsolgt
-      return (tradeCounts[b.id] || 0) - (tradeCounts[a.id] || 0); // flest handlede styk øverst
-    });
+      (activeCat === "Alle" || (m.cat || "Materialer") === activeCat)),
+    inventory, tradeCounts);
 
   const cats = ["Alle", ...(config.categories || ["Materialer"])];
 
@@ -575,7 +583,7 @@ export default function App() {
         <Customers sales={sales} config={config} cur={cur} wide={wide} openCust={openCust} setOpenCust={setOpenCust} />
       ) : view === "lager" && !showSettings ? (
         <InventoryView materials={materials} inventory={inventory} cur={cur} wide={wide} canEdit={canManageStore}
-          cash={cash}
+          cash={cash} tradeCounts={tradeCounts}
           onSetQty={async (mid, qty) => {
             setInventory((prev) => ({ ...prev, [mid]: qty }));
             try { await setInventoryQty(mid, qty); } catch (e) {}
@@ -954,7 +962,7 @@ function Customers({ sales, config, cur, wide, openCust, setOpenCust }) {
 }
 
 /* ── Lager ── */
-function InventoryView({ materials, inventory, cur, wide, canEdit, cash, onSetQty, onSetCash }) {
+function InventoryView({ materials, inventory, cur, wide, canEdit, cash, tradeCounts, onSetQty, onSetCash }) {
   const dk = wide;
   const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
@@ -966,7 +974,9 @@ function InventoryView({ materials, inventory, cur, wide, canEdit, cash, onSetQt
   const wrap = "pb-10 " + (dk ? "px-8 pt-6 mx-auto " : "px-3 pt-3 ") + (dk ? "text-white" : "");
   const wrapStyle = dk ? { maxWidth: 900 } : {};
 
-  const shown = materials.filter((m) => m.name.toLowerCase().includes(q.trim().toLowerCase()));
+  const shown = sortByStockThenTrades(
+    materials.filter((m) => m.name.toLowerCase().includes(q.trim().toLowerCase())),
+    inventory, tradeCounts || {});
   const totalValue = materials.reduce((a, m) => a + (inventory[m.id] || 0) * m.price, 0);
   const totalResaleValue = materials.reduce((a, m) => a + (inventory[m.id] || 0) * (m.sell ?? m.price), 0);
   const totalUnits = materials.reduce((a, m) => a + (inventory[m.id] || 0), 0);
