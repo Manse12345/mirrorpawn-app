@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, Lock, Package, ArrowLeftRight, Home } from "lucide-react";
+import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, Lock, Package, ArrowLeftRight, Home, Camera } from "lucide-react";
 import {
   loadConfig, saveConfig as sbSaveConfig, loadSales as sbLoadSales, insertSale, logEvent,
   signIn, signOut, getSession, onAuthChange, loadMyProfile, loadAllProfiles,
@@ -67,6 +67,52 @@ const DEFAULT_CONFIG = {
 const fmt = (n) => (Math.round(n) || 0).toLocaleString("da-DK");
 const PAGE_MAX = 1100; // max-bredde for indholdssider på brede skærme (Kunder/Ansatte/Rediger)
 
+/* ── Scan bakke: OCR-tekst -> varelinjer -> fuzzy match mod prislisten ── */
+function normalizeOcr(s) {
+  return (s || "").toUpperCase().replace(/[^A-ZÆØÅ0-9 ]/g, "").replace(/\s+/g, " ").trim();
+}
+function levenshtein(a, b) {
+  const m = a.length, n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  const dp = [];
+  for (let i = 0; i <= m; i++) dp.push([i, ...Array(n).fill(0)]);
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+function bestMaterialMatch(rawName, materials) {
+  const target = normalizeOcr(rawName);
+  if (!target) return null;
+  let best = null, bestScore = -1;
+  materials.forEach((m) => {
+    const cand = normalizeOcr(m.name);
+    if (!cand) return;
+    const dist = levenshtein(target, cand);
+    const maxLen = Math.max(target.length, cand.length) || 1;
+    let score = 1 - dist / maxLen;
+    if (cand.includes(target) || target.includes(cand)) score = Math.min(1, score + 0.15);
+    if (score > bestScore) { bestScore = score; best = m; }
+  });
+  return bestScore >= 0.45 ? { material: best, score: bestScore } : null;
+}
+// Deler OCR-teksten op i linjer og udleder et evt. antal for enden af hver linje (fx "KAGOZ 5" -> navn "KAGOZ", antal 5)
+function parseOcrLines(rawText) {
+  return (rawText || "")
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l.replace(/[^A-Za-zÆØÅæøå0-9]/g, "").length > 1)
+    .map((line) => {
+      const m = line.match(/^(.{2,}?)[\s:xX×\-]+(\d{1,4})$/);
+      if (m) return { raw: line, name: m[1].trim(), qty: Math.max(1, parseInt(m[2], 10)) };
+      return { raw: line, name: line, qty: 1 };
+    });
+}
+
 export default function App() {
   // ── Login (Supabase Auth) ──
   const [session, setSession] = useState(undefined); // undefined = tjekker session, null = ikke logget ind
@@ -128,6 +174,7 @@ export default function App() {
   const [cash, setCashState] = useState(0);
   const loadCashFn = async () => { try { setCashState(await loadCash()); } catch (e) {} };
   const [tradeMode, setTradeMode] = useState("buy"); // buy | sell
+  const [showScan, setShowScan] = useState(false);
   // Skifter Køb/Sælg uden at miste det, man har tastet ind — kun prisen pr. linje
   // regnes om til den nye tilstands standardpris (køb- eller salgspris).
   const switchTradeMode = (m) => {
@@ -224,6 +271,20 @@ export default function App() {
     setCart(next);
   };
   const setPrice = (mid, price) => setCart({ ...cart, [mid]: { ...cart[mid], price } });
+  // Lægger scannede/matchede varer fra "Scan bakke" ind i kurven (lægger oven i eksisterende antal)
+  const applyScannedItems = (items) => {
+    setCart((prev) => {
+      const next = { ...prev };
+      items.forEach((it) => {
+        const mat = materials.find((mm) => mm.id === it.materialId);
+        if (!mat) return;
+        const existing = next[mat.id];
+        const defaultPrice = tradeMode === "sell" ? (mat.sell ?? mat.price) : mat.price;
+        next[mat.id] = { qty: (existing?.qty || 0) + it.qty, price: existing?.price ?? defaultPrice };
+      });
+      return next;
+    });
+  };
   const id = (m) => m.id;
 
   const lines = materials
@@ -407,6 +468,13 @@ export default function App() {
               <Package size={15} /> Sælg til kunde
             </button>
           </div>
+          {tradeMode === "buy" && (
+            <button onClick={() => setShowScan(true)}
+              className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg font-bold text-sm border-2 border-dashed"
+              style={wide ? { borderColor: GOLD, color: GOLD, background: "rgba(245,179,1,.08)" } : { borderColor: GOLD_D, color: GOLD_D, background: "#fdf3e7" }}>
+              <Camera size={16} /> Scan bakke (læs varer fra screenshot)
+            </button>
+          )}
           <div className="relative">
             <Search size={15} className="absolute left-2.5 top-2.5 text-stone-400" />
             <input placeholder="Søg materiale…" value={q} onChange={(e) => setQ(e.target.value)}
@@ -567,6 +635,7 @@ export default function App() {
       )}
 
       {receipt && <ReceiptModal trade={receipt} config={config} onClose={() => setReceipt(null)} />}
+      {showScan && <ScanTrayModal materials={materials} onApply={applyScannedItems} onClose={() => setShowScan(false)} />}
 
       {/* Total-bjælke (kun telefon) */}
       {!showSettings && !wide && (
@@ -1007,6 +1076,140 @@ function LoginScreen({ username, setUsername, password, setPassword, err, busy, 
 
 function FullScreenMsg({ text }) {
   return <div className="min-h-screen flex items-center justify-center bg-stone-50 text-stone-400 font-sans">{text}</div>;
+}
+
+/* ── Scan bakke (OCR via Tesseract.js — kører lokalt i browseren) ── */
+function ScanTrayModal({ materials, onApply, onClose }) {
+  const [imgSrc, setImgSrc] = useState(null);
+  const [imgFile, setImgFile] = useState(null);
+  const [scanning, setScanning] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState("");
+  const fileInputRef = useRef(null);
+
+  const loadImage = (fileOrBlob) => {
+    if (!fileOrBlob) return;
+    setImgFile(fileOrBlob);
+    setRows(null);
+    setErr("");
+    const reader = new FileReader();
+    reader.onload = (e) => setImgSrc(e.target.result);
+    reader.readAsDataURL(fileOrBlob);
+  };
+  const onFileChange = (e) => loadImage(e.target.files?.[0]);
+  const onDrop = (e) => { e.preventDefault(); loadImage(e.dataTransfer.files?.[0]); };
+  const onPasteImg = (e) => {
+    const items = e.clipboardData?.items || [];
+    for (const it of items) {
+      if (it.type && it.type.startsWith("image/")) { loadImage(it.getAsFile()); break; }
+    }
+  };
+
+  const runScan = async () => {
+    if (!imgFile) return;
+    setScanning(true); setProgress(0); setErr("");
+    try {
+      const { createWorker } = await import("tesseract.js");
+      const worker = await createWorker("eng", 1, {
+        logger: (msg) => { if (msg.status === "recognizing text" && typeof msg.progress === "number") setProgress(Math.round(msg.progress * 100)); },
+      });
+      const { data } = await worker.recognize(imgFile);
+      await worker.terminate();
+      const parsed = parseOcrLines(data.text);
+      if (parsed.length === 0) { setErr("Kunne ikke læse nogen tekst i billedet. Prøv et tydeligere/nærmere screenshot."); setScanning(false); return; }
+      setRows(parsed.map((p) => {
+        const match = bestMaterialMatch(p.name, materials);
+        return { raw: p.raw, materialId: match ? match.material.id : "", qty: p.qty, checked: true };
+      }));
+    } catch (e) {
+      setErr("OCR fejlede: " + (e?.message || String(e)));
+    }
+    setScanning(false);
+  };
+
+  const updateRow = (i, patch) => setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+  const matchedCount = rows ? rows.filter((r) => r.materialId).length : 0;
+
+  const apply = () => {
+    const toAdd = (rows || []).filter((r) => r.checked && r.materialId && r.qty > 0);
+    onApply(toAdd);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4 py-6" onClick={onClose}>
+      <div className="bg-white rounded-2xl w-full max-w-lg overflow-hidden flex flex-col" style={{ maxHeight: "92vh" }}
+        onClick={(e) => e.stopPropagation()} onPaste={onPasteImg}>
+        <div className="px-5 py-4 flex items-center justify-between shrink-0" style={{ background: INK, borderBottom: `3px solid ${GOLD}` }}>
+          <div className="text-white font-black flex items-center gap-2"><Camera size={18} style={{ color: GOLD }} /> Scan bakke</div>
+          <button onClick={onClose} className="text-stone-400"><X size={20} /></button>
+        </div>
+        <div className="p-5 space-y-3 text-stone-900 overflow-y-auto">
+          {!imgSrc && (
+            <div onDrop={onDrop} onDragOver={(e) => e.preventDefault()}
+              className="rounded-xl border-2 border-dashed p-6 text-center text-sm text-stone-500" style={{ borderColor: "#d6d3d1" }}>
+              <div className="mb-3">Træk et screenshot af kundens bakke herind, indsæt med <b>Ctrl+V</b>, eller</div>
+              <button onClick={() => fileInputRef.current?.click()} className="px-4 py-2.5 rounded-lg font-bold text-sm" style={{ background: GOLD, color: INK }}>Vælg billede</button>
+              <input ref={fileInputRef} type="file" accept="image/*" onChange={onFileChange} className="hidden" />
+            </div>
+          )}
+          {imgSrc && !rows && (
+            <div className="space-y-3">
+              <img src={imgSrc} alt="Screenshot af bakke" className="w-full rounded-lg border" style={{ borderColor: "#e7e5e4" }} />
+              {!scanning ? (
+                <div className="flex gap-2">
+                  <button onClick={runScan} className="flex-1 py-2.5 rounded-xl font-black text-sm" style={{ background: GOLD, color: INK }}>Scan billedet</button>
+                  <button onClick={() => { setImgSrc(null); setImgFile(null); setErr(""); }} className="px-4 py-2.5 rounded-xl font-bold text-sm border border-stone-300 text-stone-600">Vælg andet</button>
+                </div>
+              ) : (
+                <div className="text-center text-sm font-semibold text-stone-500 py-2">Scanner billedet… {progress}%</div>
+              )}
+              {err && <div className="text-xs font-semibold" style={{ color: RED }}>{err}</div>}
+            </div>
+          )}
+          {rows && (
+            <div className="space-y-3">
+              <div className="text-xs text-stone-500">
+                Fandt {rows.length} linje{rows.length === 1 ? "" : "r"} — {matchedCount} matchede automatisk. Tjek og ret gerne før du lægger dem i kurven.
+              </div>
+              <div className="space-y-2">
+                {rows.map((r, i) => {
+                  const unmatched = !r.materialId;
+                  return (
+                    <div key={i} className="rounded-lg border p-2.5" style={{ borderColor: unmatched ? "#f3c9c6" : "#e7e5e4", background: unmatched ? "#fdf4f3" : "white" }}>
+                      <div className="flex items-center gap-2">
+                        <input type="checkbox" checked={r.checked} onChange={(e) => updateRow(i, { checked: e.target.checked })} />
+                        <div className="text-[11px] text-stone-400 flex-1 min-w-0 truncate">OCR læste: "{r.raw}"</div>
+                        {unmatched && <span className="text-[10px] font-bold shrink-0" style={{ color: RED }}>ukendt — vælg selv</span>}
+                      </div>
+                      <div className="flex items-center gap-2 mt-1.5">
+                        <select value={r.materialId} onChange={(e) => updateRow(i, { materialId: e.target.value })}
+                          className="flex-1 min-w-0 rounded-lg border px-2 py-1.5 text-sm" style={{ borderColor: unmatched ? "#f3c9c6" : "#d6d3d1" }}>
+                          <option value="">— Ukendt, vælg selv —</option>
+                          {materials.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                        </select>
+                        <input type="number" inputMode="numeric" value={r.qty}
+                          onChange={(e) => updateRow(i, { qty: Math.max(1, +e.target.value || 1) })}
+                          className="w-16 rounded-lg border px-2 py-1.5 text-sm font-bold text-center" style={{ borderColor: "#d6d3d1" }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="flex gap-2 pt-1">
+                <button onClick={apply} className="flex-1 py-2.5 rounded-xl font-black text-sm" style={{ background: GREEN, color: "white" }}>
+                  <Check size={16} className="inline mr-1" /> Læg i kurv
+                </button>
+                <button onClick={() => { setImgSrc(null); setImgFile(null); setRows(null); setErr(""); }}
+                  className="px-4 py-2.5 rounded-xl font-bold text-sm border border-stone-300 text-stone-600">Scan nyt billede</button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /* ── Kvittering ── */
