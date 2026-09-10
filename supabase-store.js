@@ -6,8 +6,8 @@
 //  Sæt dine to offentlige værdier her (fra Supabase →
 //  Project Settings → API):
 // ============================================================
-const SUPABASE_URL  = "PROJEKT-URL-HER";       // fx https://abcd.supabase.co
-const SUPABASE_ANON = "ANON-PUBLIC-KEY-HER";   // den lange "anon public"-nøgle
+const SUPABASE_URL  = "https://pfjsxrexbxbhzqvuolwj.supabase.co";       // fx https://abcd.supabase.co
+const SUPABASE_ANON = "sb_publishable_OFx0Ekrn6CJ33jHjmcDXeQ_WXeOvMNW";   // den lange "anon public"-nøgle
 
 const H = {
   "Content-Type": "application/json",
