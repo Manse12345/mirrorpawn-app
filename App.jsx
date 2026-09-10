@@ -714,6 +714,7 @@ function InventoryView({ materials, inventory, cur, wide, canEdit, onSetQty }) {
 
   const shown = materials.filter((m) => m.name.toLowerCase().includes(q.trim().toLowerCase()));
   const totalValue = materials.reduce((a, m) => a + (inventory[m.id] || 0) * m.price, 0);
+  const totalResaleValue = materials.reduce((a, m) => a + (inventory[m.id] || 0) * (m.sell ?? m.price), 0);
   const totalUnits = materials.reduce((a, m) => a + (inventory[m.id] || 0), 0);
 
   const startEdit = (m) => { setEditing(m.id); setEditVal(String(inventory[m.id] || 0)); };
@@ -721,14 +722,18 @@ function InventoryView({ materials, inventory, cur, wide, canEdit, onSetQty }) {
 
   return (
     <div className={wrap} style={wrapStyle}>
-      <div className="grid grid-cols-2 gap-2 mb-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">
         <div className="rounded-xl border p-3" style={box}>
           <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>Varer på lager</div>
           <div className="text-lg font-black tabular-nums" style={{ color: dk ? "white" : INK }}>{fmt(totalUnits)} stk.</div>
         </div>
         <div className="rounded-xl border p-3" style={box}>
-          <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>Lagerværdi (kostpris)</div>
-          <div className="text-lg font-black tabular-nums" style={{ color: dk ? GOLD : INK }}>{fmt(totalValue)} {cur}</div>
+          <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>Kostpris</div>
+          <div className="text-lg font-black tabular-nums" style={{ color: dk ? "white" : INK }}>{fmt(totalValue)} {cur}</div>
+        </div>
+        <div className="rounded-xl border p-3" style={box}>
+          <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>Potentiel salgsværdi</div>
+          <div className="text-lg font-black tabular-nums" style={{ color: dk ? GOLD : GOLD_D }}>{fmt(totalResaleValue)} {cur}</div>
         </div>
       </div>
       <div className="relative mb-3">
@@ -744,7 +749,9 @@ function InventoryView({ materials, inventory, cur, wide, canEdit, onSetQty }) {
             <div key={m.id} className="rounded-xl border p-3 flex items-center justify-between" style={box}>
               <div>
                 <div className="font-bold" style={{ color: dk ? "white" : INK }}>{m.name}</div>
-                <div className="text-[11px]" style={{ color: sub }}>Værdi: {fmt(qty * m.price)} {cur}</div>
+                <div className="text-[11px]" style={{ color: sub }}>
+                  Kostpris: {fmt(qty * m.price)} {cur} · Salgsværdi: {fmt(qty * (m.sell ?? m.price))} {cur}
+                </div>
               </div>
               {editing === m.id ? (
                 <div className="flex items-center gap-1.5">
