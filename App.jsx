@@ -5,6 +5,7 @@ import {
   signIn, signOut, getSession, onAuthChange, loadMyProfile, loadAllProfiles,
   createStaff, updateStaff, deleteStaff,
   loadInventory, adjustInventory, setInventoryQty,
+  loadCash, adjustCash, setCash,
 } from "./supabase-store.js";
 
 /* ── Pawnshop-beregner ────────────────────────────────────────────
@@ -123,6 +124,8 @@ export default function App() {
   const refreshStaff = async () => { try { setStaffList(await loadAllProfiles()); } catch (e) {} };
   const [inventory, setInventory] = useState({}); // material_id -> qty
   const loadInventoryFn = async () => { try { setInventory(await loadInventory()); } catch (e) {} };
+  const [cash, setCashState] = useState(0);
+  const loadCashFn = async () => { try { setCashState(await loadCash()); } catch (e) {} };
   const [tradeMode, setTradeMode] = useState("buy"); // buy | sell
   const switchTradeMode = (m) => { if (m !== tradeMode) { setTradeMode(m); setCart({}); } };
 
@@ -164,14 +167,14 @@ export default function App() {
   // sletning/rydning håndteres via DB separat; behold lokalt fallback
   const saveSales = async (next) => { setSales(next); };
   const editingRef = useRef(false);
-  useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); } }, [profile]);
+  useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); loadCashFn(); } }, [profile]);
   useEffect(() => {
     if (!profile) return;
     const poll = setInterval(() => {
       // hent nye priser i baggrunden — men aldrig mens ejeren redigerer
-      if (!editingRef.current && document.visibilityState === "visible") { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); }
+      if (!editingRef.current && document.visibilityState === "visible") { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadCashFn(); }
     }, 12000);
-    const onVis = () => { if (document.visibilityState === "visible" && !editingRef.current) { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); } };
+    const onVis = () => { if (document.visibilityState === "visible" && !editingRef.current) { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadCashFn(); } };
     document.addEventListener("visibilitychange", onVis);
     return () => { clearInterval(poll); document.removeEventListener("visibilitychange", onVis); };
   }, [profile]);
@@ -250,13 +253,15 @@ export default function App() {
     const beforeLvl = levelFor(prevPoints, config.levels).cur.name;
     const afterLvl = levelFor(prevPoints + pts, config.levels).cur.name;
 
-    // lager: op ved køb, ned ved salg
+    // lager: op ved køb, ned ved salg. Kasse: ned ved køb (I betaler ud), op ved salg (I modtager)
     const invDelta = tradeMode === "buy" ? 1 : -1;
+    const cashDelta = tradeMode === "buy" ? -total : total;
     setInventory((prev) => {
       const next = { ...prev };
       trade.lines.forEach((l) => { next[l.id] = (next[l.id] || 0) + invDelta * l.qty; });
       return next;
     });
+    setCashState((prev) => prev + cashDelta);
 
     setSales([trade, ...sales].slice(0, 500));
     setReceipt(trade);
@@ -269,6 +274,7 @@ export default function App() {
       try {
         await insertSale(trade);
         await Promise.all(trade.lines.map((l) => adjustInventory(l.id, invDelta * l.qty)));
+        await adjustCash(cashDelta);
         if (id && wasNew) await logEvent("newcustomer", { custId: id });
         if (id && afterLvl !== beforeLvl) await logEvent("levelup", { custId: id, level: afterLvl, points: prevPoints + pts });
       } catch (e) {}
@@ -351,9 +357,14 @@ export default function App() {
         <Customers sales={sales} config={config} cur={cur} wide={wide} openCust={openCust} setOpenCust={setOpenCust} />
       ) : view === "lager" && !showSettings ? (
         <InventoryView materials={materials} inventory={inventory} cur={cur} wide={wide} canEdit={canManageStore}
+          cash={cash}
           onSetQty={async (mid, qty) => {
             setInventory((prev) => ({ ...prev, [mid]: qty }));
             try { await setInventoryQty(mid, qty); } catch (e) {}
+          }}
+          onSetCash={async (amount) => {
+            setCashState(amount);
+            try { await setCash(amount); } catch (e) {}
           }} />
       ) : view === "ansatte" && !showSettings && isOwner ? (
         <StaffAdmin staffList={staffList} refresh={refreshStaff} myId={profile.id} wide={wide} />
@@ -702,13 +713,15 @@ function Customers({ sales, config, cur, wide, openCust, setOpenCust }) {
 }
 
 /* ── Lager ── */
-function InventoryView({ materials, inventory, cur, wide, canEdit, onSetQty }) {
+function InventoryView({ materials, inventory, cur, wide, canEdit, cash, onSetQty, onSetCash }) {
   const dk = wide;
   const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
   const [q, setQ] = useState("");
   const [editing, setEditing] = useState(null);
   const [editVal, setEditVal] = useState("");
+  const [editCash, setEditCash] = useState(false);
+  const [cashVal, setCashVal] = useState("");
   const wrap = "pb-10 " + (dk ? "px-8 pt-6 mx-auto " : "px-3 pt-3 ") + (dk ? "text-white" : "");
   const wrapStyle = dk ? { maxWidth: 900 } : {};
 
@@ -719,9 +732,30 @@ function InventoryView({ materials, inventory, cur, wide, canEdit, onSetQty }) {
 
   const startEdit = (m) => { setEditing(m.id); setEditVal(String(inventory[m.id] || 0)); };
   const commitEdit = (m) => { onSetQty(m.id, Math.max(0, +editVal || 0)); setEditing(null); };
+  const startCashEdit = () => { setCashVal(String(Math.round(cash))); setEditCash(true); };
+  const commitCash = () => { onSetCash(+cashVal || 0); setEditCash(false); };
 
   return (
     <div className={wrap} style={wrapStyle}>
+      <div className="rounded-xl border p-4 mb-3 flex items-center justify-between" style={{ ...box, borderColor: GOLD }}>
+        <div>
+          <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>Kontanter (kassen)</div>
+          {editCash ? (
+            <div className="flex items-center gap-2 mt-1">
+              <input type="number" inputMode="numeric" autoFocus value={cashVal} onChange={(e) => setCashVal(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && commitCash()}
+                className="w-32 rounded-lg border px-2 py-1.5 text-lg font-black"
+                style={dk ? { borderColor: "#444", background: "#111", color: "white" } : { borderColor: "#d6d3d1" }} />
+              <button onClick={commitCash} className="px-2.5 py-1.5 rounded-lg font-bold text-xs" style={{ background: GREEN, color: "white" }}>Gem</button>
+            </div>
+          ) : (
+            <div className="text-2xl font-black tabular-nums" style={{ color: dk ? GOLD : GOLD_D }}>{fmt(cash)} {cur}</div>
+          )}
+        </div>
+        {canEdit && !editCash && (
+          <button onClick={startCashEdit} className="text-xs font-bold px-2 py-1" style={{ color: dk ? GOLD : BLUE }}>Ret</button>
+        )}
+      </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">
         <div className="rounded-xl border p-3" style={box}>
           <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>Varer på lager</div>

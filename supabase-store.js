@@ -130,4 +130,24 @@ export async function setInventoryQty(materialId, qty) {
   if (error) throw error;
 }
 
+// ---- Kontantbeholdning (kassen) ----
+export async function loadCash() {
+  const { data, error } = await supabase.from("cash_balance").select("amount").eq("id", 1).single();
+  if (error) throw error;
+  return +(data?.amount ?? 0);
+}
+// Justerer kassen atomisk (fx -total ved køb, +total ved salg)
+export async function adjustCash(delta) {
+  const { data, error } = await supabase.rpc("adjust_cash", { p_delta: delta });
+  if (error) throw error;
+  return +data;
+}
+// Sætter kassen direkte (bruges til at indtaste startbeløb)
+export async function setCash(amount) {
+  const { error } = await supabase
+    .from("cash_balance")
+    .upsert({ id: 1, amount, updated_at: new Date().toISOString() });
+  if (error) throw error;
+}
+
 export const supabaseReady = true;
