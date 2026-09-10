@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft } from "lucide-react";
-import { loadConfig, saveConfig as sbSaveConfig, loadSales as sbLoadSales, insertSale, logEvent, supabaseReady } from "./supabase-store.js";
+import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, Lock } from "lucide-react";
+import {
+  loadConfig, saveConfig as sbSaveConfig, loadSales as sbLoadSales, insertSale, logEvent,
+  signIn, signOut, getSession, onAuthChange, loadMyProfile, loadAllProfiles,
+  createStaff, updateStaff, deleteStaff,
+} from "./supabase-store.js";
 
 /* ── Pawnshop-beregner ────────────────────────────────────────────
    Vælg materialer, sæt mængde (og evt. ret prisen pr. handel),
@@ -15,9 +19,6 @@ const INK = "#141414", GOLD = "#F5B301", GOLD_D = "#C99400", PANEL = "#1c1c1c";
 const DEFAULT_CONFIG = {
   shopName: "Udbetalingsberegner",
   currency: "kr.",
-  ownerPin: "1234",
-  managerPin: "0000",
-  staff: [], // { id, name, pin, commissionPct }
   categories: ["Materialer", "Heists", "Våben & Udstyr", "Andet"],
   pointsPer: 1000,
   levels: [
@@ -64,13 +65,46 @@ const DEFAULT_CONFIG = {
 const fmt = (n) => (Math.round(n) || 0).toLocaleString("da-DK");
 
 export default function App() {
+  // ── Login (Supabase Auth) ──
+  const [session, setSession] = useState(undefined); // undefined = tjekker session, null = ikke logget ind
+  const [profile, setProfile] = useState(null); // { id, username, name, role }
+  const [authErr, setAuthErr] = useState("");
+  const [loginUser, setLoginUser] = useState("");
+  const [loginPass, setLoginPass] = useState("");
+  const [loginBusy, setLoginBusy] = useState(false);
+
+  useEffect(() => {
+    getSession().then((s) => setSession(s || null));
+    const unsub = onAuthChange((s) => setSession(s || null));
+    return unsub;
+  }, []);
+  useEffect(() => {
+    if (session?.user) loadMyProfile(session.user.id).then(setProfile).catch(() => setProfile(null));
+    else setProfile(null);
+  }, [session]);
+
+  const doLogin = async () => {
+    setAuthErr(""); setLoginBusy(true);
+    try {
+      await signIn(loginUser, loginPass);
+      setLoginPass("");
+    } catch (e) {
+      setAuthErr("Forkert brugernavn eller kodeord.");
+    } finally {
+      setLoginBusy(false);
+    }
+  };
+  const doLogout = async () => {
+    await signOut();
+    setSession(null); setProfile(null); setView("beregner"); setShowSettings(false);
+  };
+
   const [config, setConfig] = useState(null);
   const [cart, setCart] = useState({}); // id -> { qty, price }
   const [q, setQ] = useState("");
   const [sales, setSales] = useState([]);
-  const [view, setView] = useState("beregner"); // beregner | log
+  const [view, setView] = useState("beregner"); // beregner | log | kunder | ansatte
   const [receipt, setReceipt] = useState(null);
-  const [role, setRole] = useState("ansat"); // ansat | manager | ejer
   const [activeCat, setActiveCat] = useState("Alle");
   const [savedFlash, setSavedFlash] = useState(false);
   const [custId, setCustId] = useState("");
@@ -84,38 +118,15 @@ export default function App() {
     return () => window.removeEventListener("resize", onR);
   }, []);
   const wide = mode === "pc" ? true : mode === "mobil" ? false : autoWide;
-  const [askPin, setAskPin] = useState(false);
-  const [pinInput, setPinInput] = useState("");
-  const [pinErr, setPinErr] = useState(false);
-  const [pinShow, setPinShow] = useState(false);
+  const [staffList, setStaffList] = useState([]);
+  const refreshStaff = async () => { try { setStaffList(await loadAllProfiles()); } catch (e) {} };
 
-  // ── Sælger-identifikation (PIN pr. ansat) ──
-  const [seller, setSeller] = useState(() => {
-    try { return JSON.parse(sessionStorage.getItem("pawn_seller_v1") || "null"); } catch (e) { return null; }
-  });
-  const setSellerPersist = (s) => {
-    setSeller(s);
-    try {
-      if (s) sessionStorage.setItem("pawn_seller_v1", JSON.stringify(s));
-      else sessionStorage.removeItem("pawn_seller_v1");
-    } catch (e) {}
-  };
-  const [askSellerPin, setAskSellerPin] = useState(false);
-  const [sellerPinInput, setSellerPinInput] = useState("");
-  const [sellerPinErr, setSellerPinErr] = useState(false);
-  const identifySeller = (pin) => {
-    const staff = config?.staff || [];
-    return staff.find((p) => p.pin && p.pin === pin) || null;
-  };
-
-  const tryOpen = () => {
+  const canManageStore = !!profile && (profile.role === "ejer" || profile.role === "manager");
+  const isOwner = !!profile && profile.role === "ejer";
+  const toggleSettings = () => {
     if (showSettings) { setShowSettings(false); editingRef.current = false; return; }
-    setAskPin(true); setPinInput(""); setPinErr(false);
-  };
-  const submitPin = () => {
-    if (pinInput === (config.ownerPin || "1234")) { setRole("ejer"); setAskPin(false); setShowSettings(true); editingRef.current = true; }
-    else if (config.managerPin && pinInput === config.managerPin) { setRole("manager"); setAskPin(false); setShowSettings(true); editingRef.current = true; }
-    else setPinErr(true);
+    if (!canManageStore) return;
+    setShowSettings(true); editingRef.current = true;
   };
 
   const loadConfigFn = async (isFirst) => {
@@ -147,8 +158,9 @@ export default function App() {
   // sletning/rydning håndteres via DB separat; behold lokalt fallback
   const saveSales = async (next) => { setSales(next); };
   const editingRef = useRef(false);
-  useEffect(() => { loadConfigFn(true); loadSalesFn(); }, []);
+  useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); } }, [profile]);
   useEffect(() => {
+    if (!profile) return;
     const poll = setInterval(() => {
       // hent nye priser i baggrunden — men aldrig mens ejeren redigerer
       if (!editingRef.current && document.visibilityState === "visible") { loadConfigFn(false); loadSalesFn(); }
@@ -156,7 +168,7 @@ export default function App() {
     const onVis = () => { if (document.visibilityState === "visible" && !editingRef.current) { loadConfigFn(false); loadSalesFn(); } };
     document.addEventListener("visibilitychange", onVis);
     return () => { clearInterval(poll); document.removeEventListener("visibilitychange", onVis); };
-  }, []);
+  }, [profile]);
 
   const saveConfig = async (next) => {
     const prev = config;
@@ -170,9 +182,12 @@ export default function App() {
     } catch (e) {}
   };
 
-  if (!config) return (
-    <div className="min-h-screen flex items-center justify-center bg-stone-50 text-stone-400 font-sans">Henter…</div>
+  if (session === undefined) return <FullScreenMsg text="Henter…" />;
+  if (!session) return (
+    <LoginScreen username={loginUser} setUsername={setLoginUser} password={loginPass} setPassword={setLoginPass}
+      err={authErr} busy={loginBusy} onSubmit={doLogin} />
   );
+  if (!profile || !config) return <FullScreenMsg text="Henter…" />;
   const materials = config.materials;
   const cur = config.currency;
 
@@ -203,21 +218,16 @@ export default function App() {
 
   const cats = ["Alle", ...(config.categories || ["Materialer"])];
 
-  const saveTrade = (sellerArg) => {
+  const saveTrade = () => {
     if (lines.length === 0) return;
-    // kræv sælger-PIN, hvis der er oprettet ansatte, og ingen er identificeret endnu
-    const activeSeller = sellerArg || seller;
-    if ((config.staff || []).length > 0 && !activeSeller) { setAskSellerPin(true); return; }
-
     const pts = Math.floor(total / (config.pointsPer || 1000));
-    const commission = activeSeller ? Math.round(total * ((activeSeller.commissionPct || 0) / 100)) : 0;
     const trade = {
       id: "t" + Date.now(), at: Date.now(),
       custId: custId.trim(),
       points: pts,
       lines: lines.map((l) => ({ name: l.m.name, qty: l.qty, price: l.price, unit: l.m.unit, sum: l.sum, sellSum: l.sellSum })),
       total, sellTotal, profit,
-      sellerId: activeSeller?.id || "", sellerName: activeSeller?.name || "", commission,
+      sellerId: profile.id, sellerName: profile.name, commission: 0,
     };
     // beregn evt. niveau-skift FØR vs EFTER for kunden
     const id = custId.trim();
@@ -241,15 +251,6 @@ export default function App() {
         if (id && afterLvl !== beforeLvl) await logEvent("levelup", { custId: id, level: afterLvl, points: prevPoints + pts });
       } catch (e) {}
     })();
-  };
-
-  const submitSellerPin = () => {
-    const match = identifySeller(sellerPinInput.trim());
-    if (!match) { setSellerPinErr(true); return; }
-    const s = { id: match.id, name: match.name, commissionPct: +match.commissionPct || 0 };
-    setSellerPersist(s);
-    setAskSellerPin(false); setSellerPinInput(""); setSellerPinErr(false);
-    saveTrade(s);
   };
 
   return (
@@ -276,6 +277,10 @@ export default function App() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <div className="hidden sm:flex items-center gap-1.5 pl-3 pr-3 py-2 rounded-full text-xs font-bold"
+            style={{ background: "rgba(245,179,1,.15)", color: GOLD }}>
+            <User size={14} /> {profile.name} <span style={{ opacity: .6 }}>· {profile.role}</span>
+          </div>
           <div className="hidden sm:flex rounded-full overflow-hidden text-[11px] font-bold" style={{ border: "1px solid rgba(245,179,1,.4)" }}>
             {[["auto", "Auto"], ["mobil", "Telefon"], ["pc", "PC"]].map(([v, l]) => (
               <button key={v} onClick={() => setMode(v)} className="px-2.5 py-1.5"
@@ -287,7 +292,7 @@ export default function App() {
             style={view === "kunder" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
             <User size={16} /> Kunder
           </button>
-          {(config.staff || []).length > 0 && (
+          {isOwner && (
             <button onClick={() => { setView(view === "ansatte" ? "beregner" : "ansatte"); setShowSettings(false); }}
               className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
               style={view === "ansatte" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
@@ -299,63 +304,28 @@ export default function App() {
             style={view === "log" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
             <BarChart3 size={16} /> Dagbog
           </button>
-          <button onClick={tryOpen}
-            className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
-            style={{ background: GOLD, color: INK }}
-            aria-label="Rediger materialer og priser">
-            <Settings size={16} /> {showSettings ? "Luk" : "Rediger"}
+          {canManageStore && (
+            <button onClick={toggleSettings}
+              className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
+              style={{ background: GOLD, color: INK }}
+              aria-label="Rediger materialer og priser">
+              <Settings size={16} /> {showSettings ? "Luk" : "Rediger"}
+            </button>
+          )}
+          <button onClick={doLogout} title="Log ud"
+            className="flex items-center justify-center w-9 h-9 rounded-full font-black text-sm"
+            style={{ background: "rgba(245,179,1,.15)", color: GOLD }}>
+            <LogOut size={16} />
           </button>
         </div>
       </div>
 
-      {askPin && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 px-6" onClick={() => setAskPin(false)}>
-          <div className="bg-white rounded-2xl p-5 w-full max-w-xs" onClick={(e) => e.stopPropagation()}>
-            <div className="font-black text-stone-900 mb-1">Ejer-adgang</div>
-            <div className="text-xs text-stone-500 mb-3">Indtast ejer-koden for at redigere materialer og priser.</div>
-            <div className="relative">
-              <input type={pinShow ? "text" : "password"} inputMode="numeric" autoFocus value={pinInput}
-                onChange={(e) => { setPinInput(e.target.value); setPinErr(false); }}
-                onKeyDown={(e) => e.key === "Enter" && submitPin()}
-                className="w-full rounded-lg border px-3 py-2.5 text-center text-lg font-bold tracking-widest bg-white text-stone-900"
-                style={{ borderColor: pinErr ? RED : "#d6d3d1" }} placeholder="Kode" />
-              <button onClick={() => setPinShow(!pinShow)}
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-stone-400 text-xs font-bold px-1.5 py-1">
-                {pinShow ? "Skjul" : "Vis"}
-              </button>
-            </div>
-            {pinErr && <div className="text-xs mt-1.5 font-semibold" style={{ color: RED }}>Forkert kode.</div>}
-            <div className="flex gap-2 mt-3">
-              <button onClick={() => setAskPin(false)} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-bold text-stone-600">Annullér</button>
-              <button onClick={submitPin} className="flex-1 py-2.5 rounded-lg text-white font-bold" style={{ background: BLUE }}>Lås op</button>
-            </div>
-          </div>
-        </div>
-      )}
-      {askSellerPin && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 px-6" onClick={() => setAskSellerPin(false)}>
-          <div className="bg-white rounded-2xl p-5 w-full max-w-xs" onClick={(e) => e.stopPropagation()}>
-            <div className="font-black text-stone-900 mb-1">Hvem sælger?</div>
-            <div className="text-xs text-stone-500 mb-3">Indtast din personlige PIN-kode for at gemme handlen.</div>
-            <input type="password" inputMode="numeric" autoFocus value={sellerPinInput}
-              onChange={(e) => { setSellerPinInput(e.target.value); setSellerPinErr(false); }}
-              onKeyDown={(e) => e.key === "Enter" && submitSellerPin()}
-              className="w-full rounded-lg border px-3 py-2.5 text-center text-lg font-bold tracking-widest bg-white text-stone-900"
-              style={{ borderColor: sellerPinErr ? RED : "#d6d3d1" }} placeholder="Din PIN" />
-            {sellerPinErr && <div className="text-xs mt-1.5 font-semibold" style={{ color: RED }}>Ukendt PIN — spørg en manager om at oprette dig under Ansatte.</div>}
-            <div className="flex gap-2 mt-3">
-              <button onClick={() => { setAskSellerPin(false); setSellerPinInput(""); setSellerPinErr(false); }} className="flex-1 py-2.5 rounded-lg border border-stone-300 font-bold text-stone-600">Annullér</button>
-              <button onClick={submitSellerPin} className="flex-1 py-2.5 rounded-lg text-white font-bold" style={{ background: BLUE }}>Bekræft</button>
-            </div>
-          </div>
-        </div>
-      )}
       {view === "kunder" && !showSettings ? (
         <Customers sales={sales} config={config} cur={cur} wide={wide} openCust={openCust} setOpenCust={setOpenCust} />
-      ) : view === "ansatte" && !showSettings ? (
-        <StaffView sales={sales} config={config} cur={cur} wide={wide} />
+      ) : view === "ansatte" && !showSettings && isOwner ? (
+        <StaffAdmin staffList={staffList} refresh={refreshStaff} myId={profile.id} wide={wide} />
       ) : view === "log" && !showSettings ? (
-        <SalesLog sales={sales} cur={cur} wide={wide} onClear={() => { if (role === "ejer") saveSales([]); }} role={role}
+        <SalesLog sales={sales} cur={cur} wide={wide} onClear={() => { if (isOwner) saveSales([]); }} role={profile.role}
           onDelete={(id) => saveSales(sales.filter((s) => s.id !== id))} />
       ) : showSettings ? (
         <PriceSettings config={config} save={saveConfig} close={() => { setShowSettings(false); editingRef.current = false; }} wide={wide} />
@@ -368,11 +338,13 @@ export default function App() {
               className="w-full rounded-lg border pl-8 pr-3 py-2 text-sm"
               style={wide ? { borderColor: "#3a3a3a", background: PANEL, color: "white" } : { borderColor: "#d6d3d1", background: "white" }} />
           </div>
-          <button onClick={tryOpen}
-            className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg border border-dashed text-sm font-semibold"
-            style={wide ? { borderColor: "#3a3a3a", color: GOLD } : { borderColor: "#d6d3d1", color: "#78716c" }}>
-            <Settings size={15} /> Rediger, tilføj eller slet materialer (kun ejer)
-          </button>
+          {canManageStore && (
+            <button onClick={toggleSettings}
+              className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg border border-dashed text-sm font-semibold"
+              style={wide ? { borderColor: "#3a3a3a", color: GOLD } : { borderColor: "#d6d3d1", color: "#78716c" }}>
+              <Settings size={15} /> Rediger, tilføj eller slet materialer
+            </button>
+          )}
           {(config.categories || []).length > 0 && (
             <div className="flex flex-wrap gap-1.5">
               {cats.map((c) => (
@@ -475,12 +447,6 @@ export default function App() {
                       </div>
                     )}
                   </div>
-                  {(config.staff || []).length > 0 && (
-                    <div className="mt-2 flex items-center justify-between text-[11px]" style={{ color: "#9ca3af" }}>
-                      <span>Sælger: <span className="font-bold" style={{ color: seller ? GOLD : "#f87171" }}>{seller ? seller.name : "ikke valgt endnu"}</span></span>
-                      {seller && <button onClick={() => setSellerPersist(null)} className="font-bold underline flex items-center gap-1" style={{ color: GOLD }}><LogOut size={11} /> Skift</button>}
-                    </div>
-                  )}
                   {lines.length > 0 && (
                     <div className="mt-2 space-y-2">
                       <button onClick={() => saveTrade()}
@@ -529,12 +495,6 @@ export default function App() {
                 className="w-full rounded-lg border border-stone-300 px-3 py-2 text-sm bg-white" />
             </div>
           )}
-          {lines.length > 0 && (config.staff || []).length > 0 && (
-            <div className="px-4 pt-2 flex items-center justify-between text-[11px] text-stone-500">
-              <span>Sælger: <span className="font-bold" style={{ color: seller ? GOLD_D : RED }}>{seller ? seller.name : "ikke valgt endnu"}</span></span>
-              {seller && <button onClick={() => setSellerPersist(null)} className="font-bold underline" style={{ color: BLUE }}>Skift</button>}
-            </div>
-          )}
           <div className="px-4 py-3 flex items-center justify-between">
             <div>
               <div className="text-[10px] uppercase tracking-widest font-bold text-stone-400">Kunden skal have</div>
@@ -543,7 +503,7 @@ export default function App() {
               </div>
             </div>
             {lines.length > 0 && (
-              <button onClick={saveTrade}
+              <button onClick={() => saveTrade()}
                 className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl font-black text-white" style={{ background: INK }}>
                 <Save size={16} /> Gem
               </button>
@@ -690,53 +650,161 @@ function Customers({ sales, config, cur, wide, openCust, setOpenCust }) {
   );
 }
 
-/* ── Ansatte & provision ── */
-function StaffView({ sales, config, cur, wide }) {
+/* ── Ansatte (login-administration, kun ejer) ── */
+function StaffAdmin({ staffList, refresh, myId, wide }) {
   const dk = wide;
   const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
-  const today = new Date().toISOString().slice(0, 10);
-  const isToday = (t) => new Date(t.at).toISOString().slice(0, 10) === today;
-
-  const map = {};
-  (config.staff || []).forEach((p) => { map[p.id] = { id: p.id, name: p.name, commissionPct: +p.commissionPct || 0, trades: 0, tradesToday: 0, commission: 0, commissionToday: 0, total: 0 }; });
-  sales.forEach((t) => {
-    if (!t.sellerId) return;
-    if (!map[t.sellerId]) map[t.sellerId] = { id: t.sellerId, name: t.sellerName || t.sellerId, commissionPct: 0, trades: 0, tradesToday: 0, commission: 0, commissionToday: 0, total: 0 };
-    const p = map[t.sellerId];
-    p.trades += 1; p.total += t.total; p.commission += (t.commission || 0);
-    if (isToday(t)) { p.tradesToday += 1; p.commissionToday += (t.commission || 0); }
-  });
-  const list = Object.values(map).sort((a, b) => b.commission - a.commission);
+  const inp = "rounded-lg border px-2 py-2 text-sm " + (dk ? "" : "border-stone-300 bg-white");
+  const inpStyle = dk ? { borderColor: "#3a3a3a", background: PANEL, color: "white" } : {};
   const wrap = "pb-10 " + (dk ? "px-8 pt-6 mx-auto " : "px-3 pt-3 ") + (dk ? "text-white" : "");
-  const wrapStyle = dk ? { maxWidth: 900 } : {};
+  const wrapStyle = dk ? { maxWidth: 720 } : {};
+
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [newForm, setNewForm] = useState({ username: "", password: "", name: "", role: "ansat" });
+  const [editing, setEditing] = useState(null);
+  const [editForm, setEditForm] = useState({ name: "", role: "ansat", password: "" });
+
+  const submitNew = async () => {
+    setErr("");
+    if (!newForm.username.trim() || !newForm.password.trim() || !newForm.name.trim()) { setErr("Udfyld brugernavn, kodeord og navn."); return; }
+    setBusy(true);
+    try {
+      await createStaff(newForm.username.trim(), newForm.password, newForm.name.trim(), newForm.role);
+      setNewForm({ username: "", password: "", name: "", role: "ansat" });
+      await refresh();
+    } catch (e) { setErr(e.message || "Kunne ikke oprette ansat."); }
+    setBusy(false);
+  };
+  const startEdit = (p) => { setEditing(p.id); setEditForm({ name: p.name, role: p.role, password: "" }); setErr(""); };
+  const submitEdit = async (id) => {
+    setBusy(true); setErr("");
+    try {
+      await updateStaff(id, { name: editForm.name, role: editForm.role, password: editForm.password || undefined });
+      setEditing(null);
+      await refresh();
+    } catch (e) { setErr(e.message || "Kunne ikke gemme ændringer."); }
+    setBusy(false);
+  };
+  const remove = async (id) => {
+    if (!window.confirm("Slet denne ansattes konto? Det kan ikke fortrydes.")) return;
+    setBusy(true); setErr("");
+    try { await deleteStaff(id); await refresh(); } catch (e) { setErr(e.message || "Kunne ikke slette."); }
+    setBusy(false);
+  };
 
   return (
     <div className={wrap} style={wrapStyle}>
-      {list.length === 0 && <div className="text-sm py-6 text-center" style={{ color: sub }}>Ingen ansatte oprettet endnu. Tilføj dem under Rediger → Ansatte &amp; provision.</div>}
-      <div className={wide ? "grid gap-3" : "space-y-2"} style={wide ? { gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" } : {}}>
-        {list.map((p) => (
+      <div className="text-xs font-black uppercase tracking-wider mb-2" style={{ color: dk ? GOLD : BLUE }}>Ansatte</div>
+      {err && <div className="text-xs font-semibold mb-2" style={{ color: RED }}>{err}</div>}
+      <div className="space-y-2 mb-4">
+        {staffList.map((p) => (
           <div key={p.id} className="rounded-xl border p-3" style={box}>
-            <div className="flex items-center justify-between">
-              <div className="font-black" style={{ color: dk ? "white" : INK }}>{p.name}</div>
-              <span className="px-2 py-0.5 rounded-full text-[11px] font-bold" style={{ background: dk ? "rgba(245,179,1,.15)" : "#fdf3e7", color: dk ? GOLD : GOLD_D }}>{p.commissionPct}%</span>
-            </div>
-            <div className="grid grid-cols-2 gap-2 mt-2">
-              <div>
-                <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>Provision i dag</div>
-                <div className="text-base font-black tabular-nums" style={{ color: dk ? "#4ade80" : GREEN }}>{fmt(p.commissionToday)} {cur}</div>
+            {editing === p.id ? (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                    placeholder="Navn" className={inp + " flex-1 min-w-0"} style={inpStyle} />
+                  <select value={editForm.role} onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
+                    className={inp} style={inpStyle}>
+                    <option value="ansat">Ansat</option>
+                    <option value="manager">Manager</option>
+                    <option value="ejer">Ejer</option>
+                  </select>
+                </div>
+                <input value={editForm.password} onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
+                  placeholder="Nyt kodeord (kun hvis det skal skiftes)" type="password"
+                  className={inp + " w-full"} style={inpStyle} />
+                <div className="flex gap-2">
+                  <button disabled={busy} onClick={() => submitEdit(p.id)} className="flex-1 py-2 rounded-lg font-bold text-sm" style={{ background: GREEN, color: "white" }}>Gem</button>
+                  <button onClick={() => setEditing(null)} className="flex-1 py-2 rounded-lg font-bold text-sm border" style={{ borderColor: dk ? "#444" : "#d6d3d1", color: sub }}>Annullér</button>
+                </div>
               </div>
-              <div>
-                <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>Provision i alt</div>
-                <div className="text-base font-black tabular-nums" style={{ color: dk ? GOLD : INK }}>{fmt(p.commission)} {cur}</div>
+            ) : (
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="font-black" style={{ color: dk ? "white" : INK }}>
+                    {p.name} {p.id === myId && <span className="text-[10px] font-bold" style={{ color: sub }}>(dig)</span>}
+                  </div>
+                  <div className="text-[11px]" style={{ color: sub }}>@{p.username} · {p.role}</div>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button onClick={() => startEdit(p)} className="text-xs font-bold px-2 py-1" style={{ color: dk ? GOLD : BLUE }}>Rediger</button>
+                  {p.id !== myId && (
+                    <button onClick={() => remove(p.id)} className="p-1" style={{ color: dk ? "#666" : "#d6d3d1" }}><Trash2 size={15} /></button>
+                  )}
+                </div>
               </div>
-            </div>
-            <div className="text-[11px] mt-2" style={{ color: sub }}>{p.tradesToday} handler i dag · {p.trades} i alt</div>
+            )}
           </div>
         ))}
       </div>
+
+      <div className="text-xs font-black uppercase tracking-wider mb-2" style={{ color: dk ? GOLD : BLUE }}>Opret ny ansat</div>
+      <div className="rounded-xl border-2 border-dashed p-3 space-y-2" style={{ borderColor: dk ? "#444" : "#d6d3d1" }}>
+        <div className="flex items-center gap-2">
+          <input value={newForm.username} onChange={(e) => setNewForm({ ...newForm, username: e.target.value })}
+            placeholder="Brugernavn" className={inp + " flex-1 min-w-0"} style={inpStyle} />
+          <input value={newForm.password} onChange={(e) => setNewForm({ ...newForm, password: e.target.value })}
+            placeholder="Kodeord (min. 6 tegn)" type="password" className={inp + " flex-1 min-w-0"} style={inpStyle} />
+        </div>
+        <div className="flex items-center gap-2">
+          <input value={newForm.name} onChange={(e) => setNewForm({ ...newForm, name: e.target.value })}
+            placeholder="Fulde navn" className={inp + " flex-1 min-w-0"} style={inpStyle} />
+          <select value={newForm.role} onChange={(e) => setNewForm({ ...newForm, role: e.target.value })}
+            className={inp} style={inpStyle}>
+            <option value="ansat">Ansat</option>
+            <option value="manager">Manager</option>
+            <option value="ejer">Ejer</option>
+          </select>
+        </div>
+        <button disabled={busy} onClick={submitNew} className="w-full py-2.5 rounded-lg font-black text-sm" style={{ background: GOLD, color: INK }}>
+          <Plus size={15} className="inline mr-1" /> Opret ansat
+        </button>
+      </div>
+      <div className="text-[11px] mt-2" style={dk ? { color: "#6b7280" } : { color: "#a8a29e" }}>
+        Rollerne styrer adgang: <b>Ansat</b> kan bruge beregneren. <b>Manager</b> kan også redigere priser. <b>Ejer</b> har fuld adgang, inkl. denne side.
+      </div>
     </div>
   );
+}
+
+/* ── Login ── */
+function LoginScreen({ username, setUsername, password, setPassword, err, busy, onSubmit }) {
+  return (
+    <div className="min-h-screen flex items-center justify-center font-sans px-4" style={{ background: INK }}>
+      <form onSubmit={(e) => { e.preventDefault(); onSubmit(); }} className="w-full max-w-xs rounded-2xl p-6" style={{ background: PANEL, border: "1px solid #333" }}>
+        <div className="flex items-center justify-center mb-4">
+          <span className="inline-flex items-center justify-center rounded-lg font-black" style={{ background: GOLD, color: INK, width: 48, height: 48, fontSize: 24 }}>◆</span>
+        </div>
+        <div className="text-center uppercase tracking-widest font-bold text-[11px] mb-1" style={{ color: GOLD }}>Buy · Sell · Trade</div>
+        <div className="text-center text-white font-black text-xl mb-5">Log ind</div>
+        <label className="block mb-3">
+          <div className="text-[11px] font-bold uppercase mb-1" style={{ color: "#9ca3af" }}>Brugernavn</div>
+          <input autoFocus value={username} onChange={(e) => setUsername(e.target.value)}
+            className="w-full rounded-lg border px-3 py-2.5 text-sm font-bold"
+            style={{ borderColor: "#444", background: "#111", color: "white" }} />
+        </label>
+        <label className="block mb-1">
+          <div className="text-[11px] font-bold uppercase mb-1" style={{ color: "#9ca3af" }}>Kodeord</div>
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
+            className="w-full rounded-lg border px-3 py-2.5 text-sm font-bold"
+            style={{ borderColor: "#444", background: "#111", color: "white" }} />
+        </label>
+        {err && <div className="text-xs font-semibold mt-2" style={{ color: "#f87171" }}>{err}</div>}
+        <button type="submit" disabled={busy || !username.trim() || !password.trim()}
+          className="w-full mt-4 flex items-center justify-center gap-1.5 py-3 rounded-xl font-black text-base disabled:opacity-50"
+          style={{ background: GOLD, color: INK }}>
+          <Lock size={16} /> {busy ? "Logger ind…" : "Log ind"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function FullScreenMsg({ text }) {
+  return <div className="min-h-screen flex items-center justify-center bg-stone-50 text-stone-400 font-sans">{text}</div>;
 }
 
 /* ── Kvittering ── */
@@ -771,7 +839,6 @@ function ReceiptModal({ trade, config, onClose }) {
           {trade.sellerName && (
             <div className="flex justify-between items-baseline mt-1 text-xs">
               <span className="text-stone-500">Solgt af {trade.sellerName}</span>
-              {trade.commission > 0 && <span className="font-bold" style={{ color: GOLD_D }}>+{fmt(trade.commission)} {cur} provision</span>}
             </div>
           )}
         </div>
@@ -843,20 +910,8 @@ function SalesLog({ sales, cur, wide, onClear, onDelete, role }) {
 function PriceSettings({ config, save, close, wide }) {
   const [shopName, setShopName] = useState(config.shopName);
   const [currency, setCurrency] = useState(config.currency);
-  const [pin, setPin] = useState(config.ownerPin || "1234");
-  const [mgrPin, setMgrPin] = useState(config.managerPin || "0000");
   const [pointsPer, setPointsPer] = useState(config.pointsPer || 1000);
   const [levels, setLevels] = useState(config.levels || [{ name: "Bronze", min: 0 }]);
-  const [staffList, setStaffList] = useState(config.staff || []);
-  const [newStaff, setNewStaff] = useState({ name: "", pin: "", commissionPct: "" });
-  const addStaff = () => {
-    if (!newStaff.name.trim() || !newStaff.pin.trim()) return;
-    setStaffList([...staffList, { id: "s" + Date.now(), name: newStaff.name.trim(), pin: newStaff.pin.trim(), commissionPct: +newStaff.commissionPct || 0 }]);
-    setNewStaff({ name: "", pin: "", commissionPct: "" });
-  };
-  const updStaff = (id, field, val) =>
-    setStaffList(staffList.map((p) => (p.id === id ? { ...p, [field]: field === "commissionPct" ? +val || 0 : val } : p)));
-  const delStaff = (id) => setStaffList(staffList.filter((p) => p.id !== id));
   const [catList, setCatList] = useState(config.categories || ["Materialer"]);
   const [newCat, setNewCat] = useState("");
   const addCat = () => {
@@ -888,7 +943,7 @@ function PriceSettings({ config, save, close, wide }) {
     setList([...list, { id: "m" + Date.now(), name: nm.name.trim(), price: +nm.price || 0, sell: +nm.sell || +nm.price || 0, unit: nm.unit.trim() || "stk.", cat: catList[0] || "Materialer" }]);
     setNm({ name: "", price: "", sell: "", unit: "stk." });
   };
-  const commit = () => save({ shopName: shopName.trim() || "Udbetalingsberegner", currency: currency.trim() || "kr.", ownerPin: pin.trim() || "1234", managerPin: mgrPin.trim() || "0000", categories: catList.length ? catList : ["Materialer"], pointsPer: +pointsPer || 1000, levels, staff: staffList, materials: list });
+  const commit = () => save({ shopName: shopName.trim() || "Udbetalingsberegner", currency: currency.trim() || "kr.", categories: catList.length ? catList : ["Materialer"], pointsPer: +pointsPer || 1000, levels, materials: list });
 
   const dk = wide;
   const inp = "rounded-lg border px-2 py-2 text-sm " + (dk ? "" : "border-stone-300 bg-white");
@@ -923,14 +978,6 @@ function PriceSettings({ config, save, close, wide }) {
             <div className="text-[11px] font-bold uppercase mb-1" style={lab}>Valuta</div>
             <input value={currency} onChange={(e) => setCurrency(e.target.value)} className={inp + " w-28"} style={inpStyle} />
           </label>
-          <label className="block">
-            <div className="text-[11px] font-bold uppercase mb-1" style={lab}>Ejer-kode (fuld adgang)</div>
-            <input value={pin} onChange={(e) => setPin(e.target.value)} className={inp + " w-28"} style={inpStyle} />
-          </label>
-          <label className="block">
-            <div className="text-[11px] font-bold uppercase mb-1" style={lab}>Manager-kode (kan rette priser, ikke rydde dagbog)</div>
-            <input value={mgrPin} onChange={(e) => setMgrPin(e.target.value)} className={inp + " w-28"} style={inpStyle} />
-          </label>
         </div>
       </div>
 
@@ -953,41 +1000,6 @@ function PriceSettings({ config, save, close, wide }) {
           ))}
           <button onClick={() => setLevels([...levels, { name: "Nyt niveau", min: 0 }])}
             className="text-xs font-bold flex items-center gap-1" style={{ color: dk ? GOLD : BLUE }}><Plus size={14} /> Tilføj niveau</button>
-        </div>
-      </div>
-      <div>
-        <div className="text-xs font-black uppercase tracking-wider mb-2" style={{ color: dk ? GOLD : BLUE }}>Ansatte &amp; provision</div>
-        <div className="text-[11px] mb-2" style={lab}>Hver ansat får sin egen PIN. Ved et salg skal de taste den, så salget bliver koblet til dem — og provisionen beregnes automatisk af det udbetalte beløb.</div>
-        <div className="space-y-2">
-          {staffList.map((p) => (
-            <div key={p.id} className="rounded-xl border p-2 flex items-center gap-2" style={cardBg}>
-              <input value={p.name} onChange={(e) => updStaff(p.id, "name", e.target.value)}
-                placeholder="Navn" className={inp + " flex-1 min-w-0 font-semibold"} style={inpStyle} />
-              <input value={p.pin} onChange={(e) => updStaff(p.id, "pin", e.target.value)}
-                placeholder="PIN" className={inp + " w-20"} style={inpStyle} />
-              <div className="flex items-center gap-1 shrink-0">
-                <input type="number" inputMode="numeric" value={p.commissionPct} onChange={(e) => updStaff(p.id, "commissionPct", e.target.value)}
-                  className={inp + " w-16 font-bold"} style={inpStyle} />
-                <span className="text-xs font-bold" style={lab}>%</span>
-              </div>
-              <button onClick={() => delStaff(p.id)} className="text-stone-300 active:text-red-500 p-1 shrink-0"><Trash2 size={16} /></button>
-            </div>
-          ))}
-        </div>
-        <div className="rounded-xl border-2 border-dashed p-2 mt-2 flex items-center gap-2" style={{ borderColor: dk ? "#444" : "#d6d3d1" }}>
-          <input placeholder="Navn" value={newStaff.name} onChange={(e) => setNewStaff({ ...newStaff, name: e.target.value })}
-            className={inp + " flex-1 min-w-0"} style={inpStyle} />
-          <input placeholder="PIN" value={newStaff.pin} onChange={(e) => setNewStaff({ ...newStaff, pin: e.target.value })}
-            className={inp + " w-20"} style={inpStyle} />
-          <div className="flex items-center gap-1 shrink-0">
-            <input type="number" inputMode="numeric" placeholder="0" value={newStaff.commissionPct} onChange={(e) => setNewStaff({ ...newStaff, commissionPct: e.target.value })}
-              className={inp + " w-16"} style={inpStyle} />
-            <span className="text-xs font-bold" style={lab}>%</span>
-          </div>
-          <button onClick={addStaff} disabled={!newStaff.name.trim() || !newStaff.pin.trim()}
-            className="w-9 h-9 rounded-lg text-white flex items-center justify-center shrink-0 disabled:opacity-30" style={{ background: GREEN }}>
-            <Plus size={18} />
-          </button>
         </div>
       </div>
       <div>
