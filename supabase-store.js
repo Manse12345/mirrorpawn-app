@@ -151,6 +151,15 @@ export async function craftItem(consumed, outputMaterialId, outputQty) {
   if (error) throw error;
 }
 
+// Trækker KUN de forbrugte materialer fra lageret — lægger ingen færdigvare til.
+// Bruges til "craftede du disse?"-tjekket efter et salg, hvor varen allerede er
+// solgt (og derfor ikke skal lægges til lageret igen).
+export async function consumeCraftMaterials(consumed) {
+  // consumed: [{ material_id, qty }, ...]
+  const { error } = await supabase.rpc("craft_consume", { p_consumed: consumed });
+  if (error) throw error;
+}
+
 // ---- Kontantbeholdning (kassen) ----
 export async function loadCash() {
   const { data, error } = await supabase.from("cash_balance").select("amount").eq("id", 1).single();

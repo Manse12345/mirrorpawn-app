@@ -6,7 +6,7 @@ import {
   createStaff, updateStaff, deleteStaff,
   loadInventory, adjustInventory, setInventoryQty,
   loadCash, adjustCash, setCash,
-  deleteCustomer, craftItem,
+  deleteCustomer, craftItem, consumeCraftMaterials,
 } from "./supabase-store.js";
 
 /* ── Pawnshop-beregner ────────────────────────────────────────────
@@ -322,6 +322,7 @@ export default function App() {
   const [sales, setSales] = useState([]);
   const [view, setView] = useState("beregner"); // beregner | log | kunder | ansatte
   const [receipt, setReceipt] = useState(null);
+  const [craftCheck, setCraftCheck] = useState(null); // { matches: [{ recipe, soldQty }] } — "craftede du disse?" efter et salg
   const [activeCat, setActiveCat] = useState("Alle");
   const [savedFlash, setSavedFlash] = useState(false);
   const [custId, setCustId] = useState("");
@@ -445,6 +446,36 @@ export default function App() {
       return next;
     });
   };
+
+  // "Craftede du disse?" efter et salg: trækker KUN opskriftens materialer fra lageret
+  // (ingen ny færdigvare lægges til — den blev jo lige solgt). Bruges af CraftCheckModal.
+  const handleCraftConsumeOnly = async (recipe, qty) => {
+    qty = Math.max(0, Math.floor(+qty) || 0);
+    if (qty <= 0) return;
+
+    const consumed = recipe.mats.map((rm) => {
+      const mat = findMaterialByName(config.materials, rm.name);
+      if (!mat) throw new Error(`Ukendt materiale: ${rm.name}`);
+      return { material_id: mat.id, name: mat.name, qty: rm.qty * qty };
+    });
+
+    for (const c of consumed) {
+      const have = inventory[c.material_id] || 0;
+      if (have < c.qty) throw new Error(`Ikke nok ${c.name} på lager — har ${have}, kræver ${c.qty}.`);
+    }
+
+    try {
+      await consumeCraftMaterials(consumed.map(({ material_id, qty }) => ({ material_id, qty })));
+    } catch (e) {
+      throw new Error("Lageret nåede at ændre sig i mellemtiden. Prøv igen.");
+    }
+
+    setInventory((prev) => {
+      const next = { ...prev };
+      consumed.forEach((c) => { next[c.material_id] = (next[c.material_id] || 0) - c.qty; });
+      return next;
+    });
+  };
   const editingRef = useRef(false);
   useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); loadCashFn(); } }, [profile]);
   useEffect(() => {
@@ -561,6 +592,16 @@ export default function App() {
 
     setSales([trade, ...sales].slice(0, 500));
     setReceipt(trade);
+    // "Craftede du disse?" — kun relevant ved salg TIL kunde, og kun for de linjer,
+    // der matcher en af de 19 crafting-opskrifter (navnematch, ikke case/mellemrum-følsomt).
+    if (tradeMode === "sell") {
+      const matches = trade.lines
+        .map((l) => ({ recipe: findRecipeByName(l.name), soldQty: l.qty }))
+        .filter((m) => m.recipe);
+      setCraftCheck(matches.length > 0 ? { matches } : null);
+    } else {
+      setCraftCheck(null);
+    }
     setSavedFlash(true); setTimeout(() => setSavedFlash(false), 1500);
     if (navigator.vibrate) navigator.vibrate(40);
     setCart({}); setCustId("");
@@ -861,7 +902,11 @@ export default function App() {
         </div>
       )}
 
-      {receipt && <ReceiptModal trade={receipt} config={config} onClose={() => setReceipt(null)} />}
+      {receipt ? (
+        <ReceiptModal trade={receipt} config={config} onClose={() => setReceipt(null)} />
+      ) : craftCheck ? (
+        <CraftCheckModal matches={craftCheck.matches} onConsume={handleCraftConsumeOnly} onClose={() => setCraftCheck(null)} />
+      ) : null}
       {showScan && <ScanTrayModal materials={materials} onApply={applyScannedItems} onClose={() => setShowScan(false)} />}
 
       {/* Total-bjælke (kun telefon) */}
@@ -1184,6 +1229,12 @@ function InventoryView({ materials, inventory, cur, wide, canEdit, cash, tradeCo
 function findMaterialByName(materials, name) {
   const target = (name || "").trim().toLowerCase();
   return materials.find((m) => (m.name || "").trim().toLowerCase() === target) || null;
+}
+// Samme insensitive navnematch som ovenfor, men mod opskriftslisten — bruges til at
+// opdage om en solgt vare er en af de 19 craftbare ting (fx til "craftede du disse?").
+function findRecipeByName(name) {
+  const target = (name || "").trim().toLowerCase();
+  return RECIPES.find((r) => r.name.trim().toLowerCase() === target) || null;
 }
 
 function Crafting({ materials, inventory, wide, onCraft }) {
@@ -1648,6 +1699,86 @@ function ReceiptModal({ trade, config, onClose }) {
         <div className="px-5 pb-4 flex gap-2">
           <div className="flex-1 text-[10px] text-stone-400 self-center">Screenshot og send til kunden.</div>
           <button onClick={onClose} className="px-4 py-2.5 rounded-xl font-black text-white" style={{ background: INK }}>Færdig</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ── "Craftede du disse?" — vises efter et salg, hvis en eller flere solgte
+   varer matcher en crafting-opskrift. Trækker kun materialer fra lageret. ── */
+function CraftCheckModal({ matches, onConsume, onClose }) {
+  const [qtyMap, setQtyMap] = useState(() =>
+    Object.fromEntries(matches.map((m) => [m.recipe.name, m.soldQty]))
+  );
+  const [busy, setBusy] = useState(false);
+  const [results, setResults] = useState(null); // null = endnu ikke bekræftet
+
+  const setQty = (name, v) => {
+    const n = Math.max(0, Math.floor(+v) || 0);
+    setQtyMap((prev) => ({ ...prev, [name]: n }));
+  };
+
+  const handleConfirm = async () => {
+    setBusy(true);
+    const res = {};
+    for (const m of matches) {
+      const qty = qtyMap[m.recipe.name] || 0;
+      if (qty <= 0) { res[m.recipe.name] = { ok: true, skipped: true }; continue; }
+      try {
+        await onConsume(m.recipe, qty);
+        res[m.recipe.name] = { ok: true, text: `✓ Trak materialer til ${qty}× ${m.recipe.name}` };
+      } catch (e) {
+        res[m.recipe.name] = { ok: false, text: e.message || "Kunne ikke trække materialer fra." };
+      }
+    }
+    setResults(res);
+    setBusy(false);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
+      <div className="bg-white rounded-2xl w-full max-w-sm overflow-hidden">
+        <div className="px-5 py-4" style={{ background: INK, borderBottom: `3px solid ${GOLD}` }}>
+          <div className="flex items-center gap-2 text-white font-black text-base"><Hammer size={17} color={GOLD} /> Craftede du disse?</div>
+          <div className="text-[11px] text-stone-400 mt-0.5">Så trækker vi materialerne fra lageret. Sæt 0 for at springe en vare over.</div>
+        </div>
+        <div className="px-5 py-4 space-y-3 max-h-[60vh] overflow-y-auto">
+          {matches.map((m) => {
+            const r = results && results[m.recipe.name];
+            return (
+              <div key={m.recipe.name} className="flex items-center justify-between gap-3 pb-3 border-b border-stone-100 last:border-0 last:pb-0">
+                <div className="min-w-0">
+                  <div className="font-bold text-sm text-stone-900 truncate">{m.recipe.name}</div>
+                  <div className="text-[11px] text-stone-500">Solgt: {m.soldQty} stk.</div>
+                  {r && (
+                    <div className="text-[11px] font-bold mt-0.5" style={{ color: r.skipped ? "#a8a29e" : r.ok ? GREEN : RED }}>
+                      {r.skipped ? "— sprunget over" : r.text}
+                    </div>
+                  )}
+                </div>
+                {!results && (
+                  <input type="number" inputMode="numeric" min={0} value={qtyMap[m.recipe.name] ?? 0}
+                    onChange={(e) => setQty(m.recipe.name, e.target.value)}
+                    className="w-16 text-center rounded-lg border border-stone-300 py-2 text-sm font-bold shrink-0" />
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <div className="px-5 pb-4 flex gap-2">
+          {results ? (
+            <button onClick={onClose} className="flex-1 py-2.5 rounded-xl font-black text-white" style={{ background: INK }}>Luk</button>
+          ) : (
+            <>
+              <button onClick={onClose} disabled={busy}
+                className="flex-1 py-2.5 rounded-xl font-bold text-stone-600 border border-stone-300 disabled:opacity-50">Spring over</button>
+              <button onClick={handleConfirm} disabled={busy}
+                className="flex-1 py-2.5 rounded-xl font-black text-white disabled:opacity-50" style={{ background: GREEN }}>
+                {busy ? "Trækker…" : "Bekræft"}
+              </button>
+            </>
+          )}
         </div>
       </div>
     </div>
