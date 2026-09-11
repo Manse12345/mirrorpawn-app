@@ -82,6 +82,11 @@ export async function loadSales(limit = 500) {
   if (error) throw error;
   return data;
 }
+// Sletter en kunde ved at slette alle dennes handler (kunder er udledt af salgshistorikken)
+export async function deleteCustomer(custId) {
+  const { error } = await supabase.from("sales").delete().eq("cust_id", custId);
+  if (error) throw error;
+}
 export async function insertSale(trade) {
   // trade: { at, custId, lines, total, sellTotal, profit, points, sellerId, sellerName, commission, type }
   const row = {
