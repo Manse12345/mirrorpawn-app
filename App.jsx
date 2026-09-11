@@ -6,7 +6,7 @@ import {
   createStaff, updateStaff, deleteStaff,
   loadInventory, adjustInventory, setInventoryQty,
   loadCash, adjustCash, setCash,
-  deleteCustomer,
+  deleteCustomer, craftItem,
 } from "./supabase-store.js";
 
 /* ── Pawnshop-beregner ────────────────────────────────────────────
@@ -401,6 +401,50 @@ export default function App() {
     setSales((prev) => prev.filter((s) => (s.custId || "") !== id));
     try { await deleteCustomer(id); } catch (e) {}
   };
+
+  // Crafter "qty" stk. af en opskrift: opretter evt. den færdige vare i materialelisten
+  // (hvis den ikke findes i forvejen, matchet på navn), og trækker/lægger til lageret
+  // atomisk via craft_item i databasen. Kaster en fejl (som Crafting-visningen viser),
+  // hvis der ikke længere er nok af et materiale.
+  const handleCraft = async (recipe, qty) => {
+    qty = Math.max(1, Math.floor(+qty) || 0);
+    if (qty <= 0) throw new Error("Ugyldigt antal.");
+
+    let nextConfig = config;
+    let outputMat = findMaterialByName(config.materials, recipe.name);
+    if (!outputMat) {
+      const catMatch = (config.categories || []).find((c) => c.toLowerCase() === (recipe.cat || "").toLowerCase());
+      const cat = catMatch || (config.categories || [])[0] || "Andet";
+      outputMat = { id: "m" + Date.now(), name: recipe.name, price: 0, sell: 0, unit: "stk.", cat };
+      nextConfig = { ...config, materials: [...config.materials, outputMat] };
+      await saveConfig(nextConfig);
+    }
+
+    const consumed = recipe.mats.map((rm) => {
+      const mat = findMaterialByName(nextConfig.materials, rm.name);
+      if (!mat) throw new Error(`Ukendt materiale: ${rm.name}`);
+      return { material_id: mat.id, name: mat.name, qty: rm.qty * qty };
+    });
+
+    // hurtigt klient-tjek for en pæn fejlmelding — den autoritative kontrol sker atomisk i databasen
+    for (const c of consumed) {
+      const have = inventory[c.material_id] || 0;
+      if (have < c.qty) throw new Error(`Ikke nok ${c.name} på lager længere — har ${have}, kræver ${c.qty}.`);
+    }
+
+    try {
+      await craftItem(consumed.map(({ material_id, qty }) => ({ material_id, qty })), outputMat.id, qty);
+    } catch (e) {
+      throw new Error("Lageret nåede at ændre sig, inden craftet blev gennemført (en kollega har måske solgt materialer i mellemtiden). Prøv igen.");
+    }
+
+    setInventory((prev) => {
+      const next = { ...prev };
+      consumed.forEach((c) => { next[c.material_id] = (next[c.material_id] || 0) - c.qty; });
+      next[outputMat.id] = (next[outputMat.id] || 0) + qty;
+      return next;
+    });
+  };
   const editingRef = useRef(false);
   useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); loadCashFn(); } }, [profile]);
   useEffect(() => {
@@ -630,7 +674,7 @@ export default function App() {
             try { await setCash(amount); } catch (e) {}
           }} />
       ) : view === "crafting" && !showSettings ? (
-        <Crafting materials={materials} inventory={inventory} wide={wide} />
+        <Crafting materials={materials} inventory={inventory} wide={wide} onCraft={handleCraft} />
       ) : view === "ansatte" && !showSettings && isOwner ? (
         <StaffAdmin staffList={staffList} refresh={refreshStaff} myId={profile.id} wide={wide} />
       ) : view === "log" && !showSettings ? (
@@ -1142,7 +1186,7 @@ function findMaterialByName(materials, name) {
   return materials.find((m) => (m.name || "").trim().toLowerCase() === target) || null;
 }
 
-function Crafting({ materials, inventory, wide }) {
+function Crafting({ materials, inventory, wide, onCraft }) {
   const dk = wide;
   const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
@@ -1150,10 +1194,35 @@ function Crafting({ materials, inventory, wide }) {
   const wrapStyle = dk ? { maxWidth: PAGE_MAX } : {};
   const cats = [...new Set(RECIPES.map((r) => r.cat))];
 
+  const [qtyByRecipe, setQtyByRecipe] = useState({});
+  const [busyRecipe, setBusyRecipe] = useState(null);
+  const [msgByRecipe, setMsgByRecipe] = useState({}); // recipe.name -> { type: "ok"|"err", text }
+
+  const doCraft = async (r, rows, maxTotal) => {
+    const qty = Math.min(Math.max(1, Math.floor(+qtyByRecipe[r.name] || 1)), maxTotal);
+    const matsStr = rows.map((row) => `${row.req.qty * qty}× ${row.mat.name}`).join(", ");
+    const confirmed = window.confirm(
+      `Craft ${qty}× ${r.name}? Dette trækker ${matsStr} fra lageret og lægger ${qty}× ${r.name} til.`
+    );
+    if (!confirmed) return;
+
+    setBusyRecipe(r.name);
+    setMsgByRecipe((prev) => ({ ...prev, [r.name]: null }));
+    try {
+      await onCraft(r, qty);
+      setMsgByRecipe((prev) => ({ ...prev, [r.name]: { type: "ok", text: `✓ Craftede ${qty}× ${r.name}` } }));
+    } catch (e) {
+      setMsgByRecipe((prev) => ({ ...prev, [r.name]: { type: "err", text: e.message || "Craft fejlede." } }));
+    } finally {
+      setBusyRecipe(null);
+      setTimeout(() => setMsgByRecipe((prev) => ({ ...prev, [r.name]: null })), 5000);
+    }
+  };
+
   return (
     <div className={wrap} style={wrapStyle}>
       <div className="text-xs mb-4" style={{ color: sub }}>
-        Viser om I har nok materialer på lager til hver opskrift. Der trækkes ikke fra lageret her — kun et tjek.
+        Viser om I har nok materialer på lager til hver opskrift. Tryk "Craft" for at trække materialerne fra det delte lager og lægge den færdige vare til.
       </div>
       {cats.map((cat) => (
         <div key={cat} className="mb-5">
@@ -1213,6 +1282,30 @@ function Crafting({ materials, inventory, wide }) {
                       </div>
                     ))}
                   </div>
+                  {status === "ok" && (
+                    <div className="mt-2.5 pt-2.5" style={{ borderTop: `1px solid ${dk ? "#333" : "#e7e5e4"}` }}>
+                      <div className="flex items-center gap-2">
+                        <input type="number" inputMode="numeric" min={1} max={maxTotal}
+                          value={qtyByRecipe[r.name] ?? 1}
+                          onChange={(e) => {
+                            const v = Math.min(Math.max(1, Math.floor(+e.target.value) || 1), maxTotal);
+                            setQtyByRecipe((prev) => ({ ...prev, [r.name]: v }));
+                          }}
+                          className="w-16 text-center rounded-lg border py-2 text-sm font-bold"
+                          style={{ borderColor: dk ? "#444" : "#d6d3d1", background: dk ? "#111" : "white", color: dk ? "white" : INK }} />
+                        <button onClick={() => doCraft(r, rows, maxTotal)} disabled={busyRecipe === r.name}
+                          className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg font-black text-sm disabled:opacity-50"
+                          style={{ background: GREEN, color: "white" }}>
+                          <Hammer size={14} /> {busyRecipe === r.name ? "Crafter…" : "Craft"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  {msgByRecipe[r.name] && (
+                    <div className="text-[11px] font-bold mt-2" style={{ color: msgByRecipe[r.name].type === "ok" ? (dk ? "#4ade80" : GREEN) : "#f87171" }}>
+                      {msgByRecipe[r.name].text}
+                    </div>
+                  )}
                 </div>
               );
             })}

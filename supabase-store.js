@@ -135,6 +135,22 @@ export async function setInventoryQty(materialId, qty) {
   if (error) throw error;
 }
 
+// ---- Crafting ----
+// Trækker de forbrugte materialer fra lageret og lægger den craftede vare til —
+// alt sammen i én atomisk DB-transaktion (se funktionen craft_item i schema-filen).
+// Hvis der ikke længere er nok af et materiale (fx en kollega har solgt i mellemtiden),
+// ruller databasen automatisk hele operationen tilbage og kaster en fejl i stedet for
+// at trække lageret i minus.
+export async function craftItem(consumed, outputMaterialId, outputQty) {
+  // consumed: [{ material_id, qty }, ...]
+  const { error } = await supabase.rpc("craft_item", {
+    p_consumed: consumed,
+    p_output_id: outputMaterialId,
+    p_output_qty: outputQty,
+  });
+  if (error) throw error;
+}
+
 // ---- Kontantbeholdning (kassen) ----
 export async function loadCash() {
   const { data, error } = await supabase.from("cash_balance").select("amount").eq("id", 1).single();
