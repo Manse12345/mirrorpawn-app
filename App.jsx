@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, Lock, Package, ArrowLeftRight, Home, Camera } from "lucide-react";
+import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, Lock, Package, ArrowLeftRight, Home, Camera, Hammer } from "lucide-react";
 import {
   loadConfig, saveConfig as sbSaveConfig, loadSales as sbLoadSales, insertSale, logEvent,
   signIn, signOut, getSession, onAuthChange, loadMyProfile, loadAllProfiles,
   createStaff, updateStaff, deleteStaff,
   loadInventory, adjustInventory, setInventoryQty,
   loadCash, adjustCash, setCash,
+  deleteCustomer,
 } from "./supabase-store.js";
 
 /* ── Pawnshop-beregner ────────────────────────────────────────────
@@ -63,6 +64,32 @@ const DEFAULT_CONFIG = {
     { id: "m30", name: "12.GA", price: 400, sell: 1200, unit: "stk.", cat: "Våben & Udstyr" },
   ]
 };
+
+// ── Crafting-opskrifter (arbejdsbænk i spillet). Materialer matches på NAVN
+//    mod config.materials, så navnene her skal matche spillet 1-til-1. ──
+const RECIPES = [
+  { name: "Luksus Våben Kit", time: 10, cat: "Våben & Udstyr", mats: [{ name: "Guld spraydåse", qty: 5 }, { name: "Plastik", qty: 10 }] },
+  { name: "Skudsikker vest", time: 15, cat: "Våben & Udstyr", mats: [{ name: "Plastik", qty: 25 }, { name: "Aluminium", qty: 25 }, { name: "Glas", qty: 25 }, { name: "Stål", qty: 50 }, { name: "Tekstil", qty: 100 }] },
+  { name: "Extended Pistol Clip", time: 10, cat: "Våben & Udstyr", mats: [{ name: "Aluminium", qty: 75 }, { name: "Gummi", qty: 75 }, { name: "Metalskrot", qty: 100 }] },
+  { name: "Lyddæmper", time: 10, cat: "Våben & Udstyr", mats: [{ name: "Stål", qty: 75 }, { name: "Aluminium", qty: 100 }, { name: "Plastik", qty: 100 }] },
+  { name: "Knojern", time: 10, cat: "Våben & Udstyr", mats: [{ name: "Metalskrot", qty: 10 }, { name: "Aluminium", qty: 15 }] },
+  { name: "Dagger", time: 10, cat: "Våben & Udstyr", mats: [{ name: "Aluminium", qty: 10 }, { name: "Metalskrot", qty: 15 }, { name: "Træ", qty: 15 }] },
+  { name: "Machete", time: 10, cat: "Våben & Udstyr", mats: [{ name: "Metalskrot", qty: 10 }, { name: "Aluminium", qty: 15 }, { name: "Træ", qty: 15 }] },
+
+  { name: "Låsesæt", time: 1, cat: "Værktøj & Andet", mats: [{ name: "Aluminium", qty: 2 }] },
+  { name: "Vinkelsliber", time: 15, cat: "Værktøj & Andet", mats: [{ name: "Glas", qty: 10 }, { name: "Gummi", qty: 10 }, { name: "Plastik", qty: 10 }, { name: "Metalskrot", qty: 20 }] },
+  { name: "Skruetrækkersæt", time: 10, cat: "Værktøj & Andet", mats: [{ name: "Gummi", qty: 10 }, { name: "Plastik", qty: 15 }, { name: "Metalskrot", qty: 30 }] },
+  { name: "Nummerplade", time: 30, cat: "Værktøj & Andet", mats: [{ name: "Plastik", qty: 30 }, { name: "Metalskrot", qty: 30 }] },
+  { name: "Sportstaske", time: 10, cat: "Værktøj & Andet", mats: [{ name: "Gummi", qty: 15 }, { name: "Tekstil", qty: 85 }] },
+  { name: "Våbenrensesæt", time: 5, cat: "Værktøj & Andet", mats: [{ name: "Raffineret Metal", qty: 20 }, { name: "Raffineret Kobber", qty: 20 }] },
+  { name: "Bandage", time: 5, cat: "Værktøj & Andet", mats: [{ name: "Tekstil", qty: 15 }] },
+
+  { name: "Elektronik", time: 2.5, cat: "Elektronik", mats: [{ name: "Kabler", qty: 1 }] },
+  { name: "Xeltrix Enhed", time: 5, cat: "Elektronik", mats: [{ name: "Kabler", qty: 1 }, { name: "Glas", qty: 10 }, { name: "Kobber", qty: 10 }, { name: "Elektronik", qty: 10 }] },
+  { name: "KryptaNode Modul", time: 5, cat: "Elektronik", mats: [{ name: "Kabler", qty: 1 }, { name: "Glas", qty: 10 }, { name: "Kobber", qty: 10 }, { name: "Elektronik", qty: 10 }] },
+  { name: "sFruit S420", time: 15, cat: "Elektronik", mats: [{ name: "Bagpanel", qty: 1 }, { name: "Kobber", qty: 10 }, { name: "Glas", qty: 25 }, { name: "Elektronik", qty: 60 }] },
+  { name: "Kabler", time: 5, cat: "Elektronik", mats: [{ name: "Dekrypteringsenhed", qty: 1 }] },
+];
 
 const fmt = (n) => (Math.round(n) || 0).toLocaleString("da-DK");
 const PAGE_MAX = 1100; // max-bredde for indholdssider på brede skærme (Kunder/Ansatte/Rediger)
@@ -370,6 +397,10 @@ export default function App() {
   };
   // sletning/rydning håndteres via DB separat; behold lokalt fallback
   const saveSales = async (next) => { setSales(next); };
+  const handleDeleteCustomer = async (id) => {
+    setSales((prev) => prev.filter((s) => (s.custId || "") !== id));
+    try { await deleteCustomer(id); } catch (e) {}
+  };
   const editingRef = useRef(false);
   useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); loadCashFn(); } }, [profile]);
   useEffect(() => {
@@ -551,6 +582,11 @@ export default function App() {
             style={view === "lager" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
             <Package size={16} /> Lager
           </button>
+          <button onClick={() => { setView(view === "crafting" ? "beregner" : "crafting"); setShowSettings(false); }}
+            className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
+            style={view === "crafting" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+            <Hammer size={16} /> Crafting
+          </button>
           {isOwner && (
             <button onClick={() => { setView(view === "ansatte" ? "beregner" : "ansatte"); setShowSettings(false); }}
               className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
@@ -580,7 +616,8 @@ export default function App() {
       </div>
 
       {view === "kunder" && !showSettings ? (
-        <Customers sales={sales} config={config} cur={cur} wide={wide} openCust={openCust} setOpenCust={setOpenCust} />
+        <Customers sales={sales} config={config} cur={cur} wide={wide} openCust={openCust} setOpenCust={setOpenCust}
+          canManage={canManageStore} onDeleteCustomer={handleDeleteCustomer} />
       ) : view === "lager" && !showSettings ? (
         <InventoryView materials={materials} inventory={inventory} cur={cur} wide={wide} canEdit={canManageStore}
           cash={cash} tradeCounts={tradeCounts}
@@ -592,6 +629,8 @@ export default function App() {
             setCashState(amount);
             try { await setCash(amount); } catch (e) {}
           }} />
+      ) : view === "crafting" && !showSettings ? (
+        <Crafting materials={materials} inventory={inventory} wide={wide} />
       ) : view === "ansatte" && !showSettings && isOwner ? (
         <StaffAdmin staffList={staffList} refresh={refreshStaff} myId={profile.id} wide={wide} />
       ) : view === "log" && !showSettings ? (
@@ -849,7 +888,7 @@ function buildCustomers(sales) {
   return Object.values(map).sort((a, b) => b.total - a.total);
 }
 
-function Customers({ sales, config, cur, wide, openCust, setOpenCust }) {
+function Customers({ sales, config, cur, wide, openCust, setOpenCust, canManage, onDeleteCustomer }) {
   const [q, setQ] = useState("");
   const dk = wide;
   const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
@@ -868,9 +907,24 @@ function Customers({ sales, config, cur, wide, openCust, setOpenCust }) {
     const progress = next ? Math.min(100, Math.round(((c.points - lvl.min) / (next.min - lvl.min)) * 100)) : 100;
     return (
       <div className={wrap} style={wrapStyle}>
-        <button onClick={() => setOpenCust(null)} className="flex items-center gap-1 text-sm font-bold mb-3" style={{ color: dk ? GOLD : BLUE }}>
-          <ChevronLeft size={16} /> Tilbage til kunder
-        </button>
+        <div className="flex items-center justify-between mb-3">
+          <button onClick={() => setOpenCust(null)} className="flex items-center gap-1 text-sm font-bold" style={{ color: dk ? GOLD : BLUE }}>
+            <ChevronLeft size={16} /> Tilbage til kunder
+          </button>
+          {canManage && (
+            <button
+              onClick={() => {
+                if (window.confirm(`Slet kunden "${c.id}" og alle ${c.trades.length} handler? Det kan ikke fortrydes.`)) {
+                  onDeleteCustomer(c.id);
+                  setOpenCust(null);
+                }
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold text-xs"
+              style={{ background: dk ? "rgba(192,57,43,.15)" : "#fdf0ef", color: RED }}>
+              <Trash2 size={14} /> Slet kunde
+            </button>
+          )}
+        </div>
         <div className="rounded-xl border p-4 mb-3" style={box}>
           <div className="flex items-center justify-between">
             <div>
@@ -944,16 +998,31 @@ function Customers({ sales, config, cur, wide, openCust, setOpenCust }) {
         {shown.map((c) => {
           const { cur: lvl } = levelFor(c.points, config.levels);
           return (
-            <button key={c.id} onClick={() => setOpenCust(c.id)} className="w-full text-left rounded-xl border p-3 flex items-center justify-between" style={box}>
-              <div>
-                <div className="font-black" style={{ color: dk ? "white" : INK }}>{c.id}</div>
-                <div className="text-[11px]" style={{ color: sub }}>{c.trades.length} handler · {c.points} point</div>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className="px-2.5 py-1 rounded-full text-[11px] font-black" style={{ background: dk ? "rgba(245,179,1,.15)" : "#fdf3e7", color: dk ? GOLD : GOLD_D }}>{lvl.name}</span>
-                <span className="font-black tabular-nums" style={{ color: dk ? GOLD : INK }}>{fmt(c.total)} {cur}</span>
-              </div>
-            </button>
+            <div key={c.id} className="w-full rounded-xl border p-3 flex items-center justify-between gap-2" style={box}>
+              <button onClick={() => setOpenCust(c.id)} className="flex-1 min-w-0 text-left flex items-center justify-between gap-3">
+                <div>
+                  <div className="font-black" style={{ color: dk ? "white" : INK }}>{c.id}</div>
+                  <div className="text-[11px]" style={{ color: sub }}>{c.trades.length} handler · {c.points} point</div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="px-2.5 py-1 rounded-full text-[11px] font-black" style={{ background: dk ? "rgba(245,179,1,.15)" : "#fdf3e7", color: dk ? GOLD : GOLD_D }}>{lvl.name}</span>
+                  <span className="font-black tabular-nums" style={{ color: dk ? GOLD : INK }}>{fmt(c.total)} {cur}</span>
+                </div>
+              </button>
+              {canManage && (
+                <button
+                  onClick={() => {
+                    if (window.confirm(`Slet kunden "${c.id}" og alle ${c.trades.length} handler? Det kan ikke fortrydes.`)) {
+                      onDeleteCustomer(c.id);
+                    }
+                  }}
+                  title="Slet kunde"
+                  className="shrink-0 p-2 rounded-lg"
+                  style={{ color: RED }}>
+                  <Trash2 size={16} />
+                </button>
+              )}
+            </div>
           );
         })}
       </div>
@@ -1063,6 +1132,93 @@ function InventoryView({ materials, inventory, cur, wide, canEdit, cash, tradeCo
         })}
       </div>
       {!canEdit && <div className="text-[11px] mt-3" style={{ color: sub }}>Kun ejer/manager kan rette lagerantal manuelt.</div>}
+    </div>
+  );
+}
+
+/* ── Crafting (visning/tjek — trækker IKKE fra lager) ── */
+function findMaterialByName(materials, name) {
+  const target = (name || "").trim().toLowerCase();
+  return materials.find((m) => (m.name || "").trim().toLowerCase() === target) || null;
+}
+
+function Crafting({ materials, inventory, wide }) {
+  const dk = wide;
+  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const sub = dk ? "#9ca3af" : "#78716c";
+  const wrap = "pb-10 " + (dk ? "px-8 pt-6 mx-auto " : "px-3 pt-3 ") + (dk ? "text-white" : "");
+  const wrapStyle = dk ? { maxWidth: PAGE_MAX } : {};
+  const cats = [...new Set(RECIPES.map((r) => r.cat))];
+
+  return (
+    <div className={wrap} style={wrapStyle}>
+      <div className="text-xs mb-4" style={{ color: sub }}>
+        Viser om I har nok materialer på lager til hver opskrift. Der trækkes ikke fra lageret her — kun et tjek.
+      </div>
+      {cats.map((cat) => (
+        <div key={cat} className="mb-5">
+          <div className="text-xs font-black uppercase tracking-widest mb-2" style={{ color: dk ? GOLD : BLUE }}>{cat}</div>
+          <div className={wide ? "grid gap-3" : "space-y-2"} style={wide ? { gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))" } : {}}>
+            {RECIPES.filter((r) => r.cat === cat).map((r) => {
+              const rows = r.mats.map((req) => {
+                const mat = findMaterialByName(materials, req.name);
+                if (!mat) return { req, mat: null, unknown: true, ok: false, stock: 0, maxCraft: 0 };
+                const stock = inventory[mat.id] || 0;
+                const ok = stock >= req.qty;
+                const maxCraft = req.qty > 0 ? Math.floor(stock / req.qty) : 0;
+                return { req, mat, unknown: false, ok, stock, maxCraft };
+              });
+              const hasUnknown = rows.some((x) => x.unknown);
+              const canCraft = !hasUnknown && rows.every((x) => x.ok);
+              const maxTotal = hasUnknown ? 0 : Math.min(...rows.map((x) => x.maxCraft));
+              const status = hasUnknown ? "unknown" : canCraft ? "ok" : "missing";
+              const statusColor = status === "ok" ? GREEN : status === "unknown" ? ORANGE : RED;
+              const cardBg = status === "ok"
+                ? (dk ? "rgba(46,125,50,.08)" : GREEN_T)
+                : status === "unknown"
+                  ? (dk ? "rgba(230,126,34,.08)" : "#fdf3e7")
+                  : (dk ? "rgba(192,57,43,.08)" : "#fdf0ef");
+              return (
+                <div key={r.name} className="rounded-xl border p-3" style={{ ...box, background: cardBg, borderColor: statusColor }}>
+                  <div className="flex items-start justify-between gap-2 mb-1.5">
+                    <div className="font-black" style={{ color: dk ? "white" : INK }}>{r.name}</div>
+                    <div className="flex items-center gap-1 text-[11px] font-bold shrink-0" style={{ color: sub }}>
+                      <Clock size={12} /> {r.time}s
+                    </div>
+                  </div>
+                  <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-black mb-2"
+                    style={{ background: statusColor, color: status === "unknown" ? INK : "white" }}>
+                    {status === "ok" && `✓ Kan laves × ${maxTotal}`}
+                    {status === "missing" && "✕ Mangler materialer"}
+                    {status === "unknown" && "⚠ Ukendt materiale i opskrift"}
+                  </div>
+                  <div className="space-y-1">
+                    {rows.map((row, i) => (
+                      <div key={i} className="text-[12px]">
+                        {row.unknown ? (
+                          <span style={{ color: ORANGE, fontWeight: 700 }}>Ukendt materiale: {row.req.name}</span>
+                        ) : row.ok ? (
+                          <div className="flex items-center justify-between">
+                            <span style={{ color: sub }}>{row.req.qty}× {row.mat.name}</span>
+                            <span style={{ color: dk ? "#4ade80" : GREEN, fontWeight: 700 }}>{row.stock} på lager</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-between gap-2">
+                            <span style={{ color: sub }}>{row.req.qty}× {row.mat.name}</span>
+                            <span style={{ color: "#f87171", fontWeight: 700 }}>
+                              Mangler {row.req.qty - row.stock}× — har {row.stock}, kræver {row.req.qty}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
