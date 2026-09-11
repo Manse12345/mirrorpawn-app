@@ -1715,15 +1715,22 @@ function CraftCheckModal({ matches, onConsume, onClose }) {
   const [results, setResults] = useState(null); // null = endnu ikke bekræftet
 
   const setQty = (name, v) => {
+    // tomt felt (v === "") -> +v er NaN -> || 0 rammer, dvs. tomt felt tæller som 0
     const n = Math.max(0, Math.floor(+v) || 0);
     setQtyMap((prev) => ({ ...prev, [name]: n }));
   };
 
+  // Kryds og "Spring over" gør PRÆCIS det samme: luk dialogen uden at kalde onConsume
+  // noget sted. Salget er allerede gemt og påvirkes ikke af dette.
+  const handleSkip = () => { onClose(); };
+
+  // Kaldes KUN af "Bekræft"-knappen. Trækker udelukkende materialer for de linjer,
+  // hvor det indtastede antal er > 0 — et tomt/0-felt springes over uden noget DB-kald.
   const handleConfirm = async () => {
     setBusy(true);
     const res = {};
     for (const m of matches) {
-      const qty = qtyMap[m.recipe.name] || 0;
+      const qty = Math.max(0, Math.floor(+qtyMap[m.recipe.name]) || 0);
       if (qty <= 0) { res[m.recipe.name] = { ok: true, skipped: true }; continue; }
       try {
         await onConsume(m.recipe, qty);
@@ -1737,11 +1744,13 @@ function CraftCheckModal({ matches, onConsume, onClose }) {
   };
 
   return (
+    // Bevidst INTET onClick her — klik på baggrunden/overlayet må ikke lukke dialogen.
+    // Dialogen kan kun lukkes via krydset, "Spring over" eller "Bekræft".
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
       <div className="bg-white rounded-2xl w-full max-w-sm overflow-hidden">
         <div className="relative px-5 py-4" style={{ background: INK, borderBottom: `3px solid ${GOLD}` }}>
-          <button onClick={onClose} aria-label="Luk" title="Luk"
-            className="absolute top-3 right-3 w-7 h-7 rounded-full flex items-center justify-center"
+          <button onClick={handleSkip} disabled={busy} aria-label="Luk" title="Luk"
+            className="absolute top-3 right-3 w-7 h-7 rounded-full flex items-center justify-center disabled:opacity-40"
             style={{ color: GOLD, background: "rgba(245,179,1,.15)" }}>
             <X size={15} />
           </button>
@@ -1776,7 +1785,7 @@ function CraftCheckModal({ matches, onConsume, onClose }) {
             <button onClick={onClose} className="flex-1 py-2.5 rounded-xl font-black text-white" style={{ background: INK }}>Luk</button>
           ) : (
             <>
-              <button onClick={onClose} disabled={busy}
+              <button onClick={handleSkip} disabled={busy}
                 className="flex-1 py-2.5 rounded-xl font-bold text-stone-600 border border-stone-300 disabled:opacity-50">Spring over</button>
               <button onClick={handleConfirm} disabled={busy}
                 className="flex-1 py-2.5 rounded-xl font-black text-white disabled:opacity-50" style={{ background: GREEN }}>
