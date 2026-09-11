@@ -1739,9 +1739,14 @@ function CraftCheckModal({ matches, onConsume, onClose }) {
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
       <div className="bg-white rounded-2xl w-full max-w-sm overflow-hidden">
-        <div className="px-5 py-4" style={{ background: INK, borderBottom: `3px solid ${GOLD}` }}>
-          <div className="flex items-center gap-2 text-white font-black text-base"><Hammer size={17} color={GOLD} /> Craftede du disse?</div>
-          <div className="text-[11px] text-stone-400 mt-0.5">Så trækker vi materialerne fra lageret. Sæt 0 for at springe en vare over.</div>
+        <div className="relative px-5 py-4" style={{ background: INK, borderBottom: `3px solid ${GOLD}` }}>
+          <button onClick={onClose} aria-label="Luk" title="Luk"
+            className="absolute top-3 right-3 w-7 h-7 rounded-full flex items-center justify-center"
+            style={{ color: GOLD, background: "rgba(245,179,1,.15)" }}>
+            <X size={15} />
+          </button>
+          <div className="flex items-center gap-2 text-white font-black text-base pr-8"><Hammer size={17} color={GOLD} /> Craftede du disse?</div>
+          <div className="text-[11px] text-stone-400 mt-0.5 pr-8">Så trækker vi materialerne fra lageret. Sæt 0 for at springe en vare over.</div>
         </div>
         <div className="px-5 py-4 space-y-3 max-h-[60vh] overflow-y-auto">
           {matches.map((m) => {
