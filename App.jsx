@@ -6,7 +6,7 @@ import {
   createStaff, updateStaff, deleteStaff,
   loadInventory, adjustInventory, setInventoryQty,
   loadCash, adjustCash, setCash,
-  deleteCustomer, craftItem, consumeCraftMaterials,
+  deleteCustomer, craftItem,
 } from "./supabase-store.js";
 
 /* ── Pawnshop-beregner ────────────────────────────────────────────
@@ -359,6 +359,7 @@ export default function App() {
   const [pendingCraftChoices, setPendingCraftChoices] = useState({}); // recipe-navn -> antal valgt i "Craftede du disse?"
   const [activeCat, setActiveCat] = useState("Alle");
   const [savedFlash, setSavedFlash] = useState(false);
+  const [craftError, setCraftError] = useState(""); // vist når craft-delen af et salg ikke kunne gennemføres (fx for få materialer)
   const [custId, setCustId] = useState("");
   const [openCust, setOpenCust] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -598,21 +599,41 @@ export default function App() {
     const invDelta = trade.type === "buy" ? 1 : -1;
     const cashDelta = trade.type === "buy" ? -trade.total : trade.total;
 
-    // craft-materialer valgt i "Craftede du disse?" — læg alle valgte opskrifter sammen
-    // til én samlet materiale-liste (i tilfælde af at to opskrifter deler et råmateriale)
-    const craftDeltaByMat = {};
+    // craft-materialer valgt i "Craftede du disse?" — for hver opskrift med craft-antal
+    // > 0 skal råmaterialerne trækkes OG den færdige vare lægges til dens eget lager
+    // (samme som craft_item gør på Crafting-siden). Salgets normale lagertræk herunder
+    // (stockLines) trækker bagefter det solgte antal fra samme vare — ellers ville en
+    // vare man lige har craftet til salget gå i minus.
+    const craftJobs = []; // [{ outputMatId, qty, consumed: [{ material_id, qty }] }]
+    const craftNeedByMat = {}; // råmateriale-id -> samlet behov på tværs af opskrifterne
+    let craftLookupFailed = false;
     Object.entries(craftChoices || {}).forEach(([recipeName, rawQty]) => {
       const qty = Math.max(0, Math.floor(+rawQty) || 0);
       if (qty <= 0) return;
       const recipe = findRecipeByName(recipeName);
-      if (!recipe) return;
+      const outputMat = recipe && findMaterialByName(config.materials, recipe.name);
+      if (!recipe || !outputMat) { craftLookupFailed = true; return; }
+      const consumed = [];
       recipe.mats.forEach((rm) => {
         const mat = findMaterialByName(config.materials, rm.name);
-        if (!mat) return;
-        craftDeltaByMat[mat.id] = (craftDeltaByMat[mat.id] || 0) + rm.qty * qty;
+        if (!mat) { craftLookupFailed = true; return; }
+        consumed.push({ material_id: mat.id, qty: rm.qty * qty });
+        craftNeedByMat[mat.id] = (craftNeedByMat[mat.id] || 0) + rm.qty * qty;
       });
+      craftJobs.push({ outputMatId: outputMat.id, qty, consumed });
     });
-    const craftConsumed = Object.entries(craftDeltaByMat).map(([material_id, qty]) => ({ material_id, qty }));
+    // Tjek FØRST at der er nok af ALLE råmaterialer til ALLE craft-valg tilsammen, før
+    // noget som helst udføres — hvis ikke, springes craft-delen helt over (men resten af
+    // handlen — salg, lager, kasse, dagbog — bogføres stadig som normalt).
+    const craftShortage = Object.entries(craftNeedByMat).find(([mid, need]) => (inventory[mid] || 0) < need);
+    const craftOk = craftJobs.length > 0 && !craftLookupFailed && !craftShortage;
+    if (craftJobs.length > 0 && !craftOk) {
+      const msg = craftShortage
+        ? `Ikke nok ${(config.materials.find((m) => m.id === craftShortage[0]) || {}).name || craftShortage[0]} på lager til at crafte — craft-materialerne blev IKKE trukket. Salget er stadig gemt.`
+        : "Kunne ikke finde en opskrift eller vare til craftet — craft-materialerne blev IKKE trukket. Salget er stadig gemt.";
+      setCraftError(msg);
+      setTimeout(() => setCraftError((cur) => (cur === msg ? "" : cur)), 8000);
+    }
     // Skranke-varer er unikke engangsgenstande og tælles IKKE i det almindelige lager —
     // kun de "rigtige" materialelinjer justerer lagerbeholdningen.
     const stockLines = trade.lines.filter((l) => !l.isCounter);
@@ -620,7 +641,12 @@ export default function App() {
     setInventory((prev) => {
       const next = { ...prev };
       stockLines.forEach((l) => { next[l.id] = (next[l.id] || 0) + invDelta * l.qty; });
-      craftConsumed.forEach((c) => { next[c.material_id] = (next[c.material_id] || 0) - c.qty; });
+      if (craftOk) {
+        craftJobs.forEach((job) => {
+          job.consumed.forEach((c) => { next[c.material_id] = (next[c.material_id] || 0) - c.qty; });
+          next[job.outputMatId] = (next[job.outputMatId] || 0) + job.qty;
+        });
+      }
       return next;
     });
     setCashState((prev) => prev + cashDelta);
@@ -634,7 +660,13 @@ export default function App() {
         await insertSale(trade);
         await Promise.all(stockLines.map((l) => adjustInventory(l.id, invDelta * l.qty)));
         await adjustCash(cashDelta);
-        if (craftConsumed.length > 0) await consumeCraftMaterials(craftConsumed);
+        if (craftOk) {
+          // sekventielt (ikke parallelt), så delte råmaterialer mellem to opskrifter
+          // tjekkes korrekt af craft_item i databasen for hvert kald
+          for (const job of craftJobs) {
+            await craftItem(job.consumed, job.outputMatId, job.qty);
+          }
+        }
         if (custIdVal && wasNew) await logEvent("newcustomer", { custId: custIdVal });
         if (custIdVal && afterLvl !== beforeLvl) await logEvent("levelup", { custId: custIdVal, level: afterLvl, points: prevPoints + trade.points });
       } catch (e) {}
@@ -713,6 +745,11 @@ export default function App() {
       {savedFlash && (
         <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full font-black text-sm shadow-lg"
           style={{ background: GREEN, color: "white" }}>✓ Handel gemt</div>
+      )}
+      {craftError && (
+        <button onClick={() => setCraftError("")}
+          className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full font-bold text-sm shadow-lg text-left"
+          style={{ background: RED, color: "white", maxWidth: 420 }}>⚠ {craftError}</button>
       )}
 
       {/* Header */}
