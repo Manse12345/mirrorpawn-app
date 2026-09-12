@@ -597,7 +597,17 @@ export default function App() {
 
     // lager: op ved køb, ned ved salg. Kasse: ned ved køb (I betaler ud), op ved salg (I modtager)
     const invDelta = trade.type === "buy" ? 1 : -1;
-    const cashDelta = trade.type === "buy" ? -trade.total : trade.total;
+    // Skranke-varer er unikke engangsgenstande og tælles IKKE i det almindelige lager —
+    // kun de "rigtige" materialelinjer justerer lagerbeholdningen (bruges også nedenfor).
+    const stockLines = trade.lines.filter((l) => !l.isCounter);
+    const counterLines = trade.lines.filter((l) => l.isCounter);
+    // Skranke-varer påvirker kassen anderledes end almindelige køb: vi udbetaler kunden
+    // "sum" (grundværdi × procent) af egen kasse, men får hele grundværdien tilbage fra
+    // spillets skranke bagefter — så det er kun AVANCEN (grundværdi minus det kunden
+    // fik), der reelt rører den kontantbeholdning, vi tracker her, ikke hele beløbet.
+    const materialTotal = stockLines.reduce((a, l) => a + l.sum, 0);
+    const counterProfitTotal = counterLines.reduce((a, l) => a + ((l.baseValue || 0) - l.sum), 0);
+    const cashDelta = trade.type === "buy" ? (-materialTotal + counterProfitTotal) : trade.total;
 
     // craft-materialer valgt i "Craftede du disse?" — for hver opskrift med craft-antal
     // > 0 skal råmaterialerne trækkes OG den færdige vare lægges til dens eget lager
@@ -634,9 +644,6 @@ export default function App() {
       setCraftError(msg);
       setTimeout(() => setCraftError((cur) => (cur === msg ? "" : cur)), 8000);
     }
-    // Skranke-varer er unikke engangsgenstande og tælles IKKE i det almindelige lager —
-    // kun de "rigtige" materialelinjer justerer lagerbeholdningen.
-    const stockLines = trade.lines.filter((l) => !l.isCounter);
 
     setInventory((prev) => {
       const next = { ...prev };
@@ -1058,7 +1065,7 @@ export default function App() {
                           {(() => {
                             const bv = Math.max(0, +counterForm.baseValue || 0);
                             const pct = Math.max(0, Math.min(100, +counterForm.pct || 0));
-                            const payoutPreview = Math.round(bv * pct) / 100;
+                            const payoutPreview = Math.round(bv * pct / 100);
                             const profitPreview = bv - payoutPreview;
                             return (
                               <div className="text-[11px] space-y-0.5 pt-0.5" style={{ color: "#9ca3af" }}>
@@ -1071,7 +1078,7 @@ export default function App() {
                               const bv = Math.max(0, +counterForm.baseValue || 0);
                               if (bv <= 0) return;
                               const pct = Math.max(0, Math.min(100, +counterForm.pct || 0));
-                              const payout = Math.round(bv * pct) / 100;
+                              const payout = Math.round(bv * pct / 100);
                               const note = counterForm.note.trim();
                               setCounterItems((prev) => [...prev, {
                                 id: "c" + Date.now() + Math.random().toString(36).slice(2, 7),
