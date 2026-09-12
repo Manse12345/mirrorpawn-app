@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Trophy } from "lucide-react";
+import { Trophy, RefreshCw, Share2 } from "lucide-react";
 import { loadPublicLeaderboard } from "./supabase-store.js";
 
 // ============================================================
@@ -12,6 +12,8 @@ import { loadPublicLeaderboard } from "./supabase-store.js";
 //  har lov til at returnere konkurrence-navn/-periode og kunde-id + beløb.
 //  main.jsx afgør FØR noget andet kører, om denne side skal vises i stedet for
 //  <App/>, så en besøger her aldrig får adgang til resten af appen.
+//  Data hentes KUN ved indlæsning og når nogen trykker "Opdater" — ingen automatisk
+//  baggrunds-polling, for at spare på database-forbruget.
 // ============================================================
 
 const INK = "#141414", GOLD = "#F5B301", PANEL = "#1c1c1c", SUB = "#9ca3af";
@@ -40,17 +42,45 @@ function formatCountdown(ms) {
   return parts.join(" ");
 }
 
+// Leaderboardet opdateres BEVIDST ikke automatisk i baggrunden (kun useNow ovenfor,
+// som blot er et lokalt ur til nedtællingen — ingen netværkskald) for at spare på
+// database-forbruget. Friske tal hentes udelukkende når nogen trykker "Opdater".
+const PUBLIC_URL = typeof window !== "undefined" ? `${window.location.origin}/leaderboard` : "https://mirrorpawn-app.vercel.app/leaderboard";
+
 export default function PublicLeaderboard() {
   const [state, setState] = useState({ loading: true, error: "", data: null });
+  const [refreshing, setRefreshing] = useState(false);
+  const [copied, setCopied] = useState(false);
   const now = useNow(1000);
 
-  useEffect(() => {
-    let cancelled = false;
-    loadPublicLeaderboard()
-      .then((data) => { if (!cancelled) setState({ loading: false, error: "", data }); })
-      .catch(() => { if (!cancelled) setState({ loading: false, error: "Kunne ikke hente leaderboardet lige nu. Prøv igen om lidt.", data: null }); });
-    return () => { cancelled = true; };
-  }, []);
+  const fetchLeaderboard = (isInitial) => {
+    if (isInitial) setState((s) => ({ ...s, loading: true, error: "" }));
+    else setRefreshing(true);
+    return loadPublicLeaderboard()
+      .then((data) => setState({ loading: false, error: "", data }))
+      .catch(() => setState((s) => ({ ...s, loading: false, error: "Kunne ikke hente leaderboardet lige nu. Prøv igen om lidt." })))
+      .finally(() => setRefreshing(false));
+  };
+
+  useEffect(() => { fetchLeaderboard(true); }, []);
+
+  const handleShare = async () => {
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(PUBLIC_URL);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = PUBLIC_URL;
+        ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.focus(); ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      }
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (e) {}
+  };
 
   const active = !state.loading && !state.error && state.data && state.data.active;
   const entries = active ? (state.data.entries || []) : [];
@@ -68,9 +98,22 @@ export default function PublicLeaderboard() {
   return (
     <div className="min-h-screen font-sans" style={{ background: INK, color: "white" }}>
       <div className="max-w-lg mx-auto px-4 py-10">
-        <div className="flex items-center justify-center gap-2 mb-6">
+        <div className="flex items-center justify-center gap-2 mb-4">
           <Trophy size={26} color={GOLD} />
           <div className="text-2xl font-black">Leaderboard</div>
+        </div>
+
+        <div className="flex items-center justify-center gap-2 mb-6">
+          <button onClick={() => fetchLeaderboard(false)} disabled={refreshing}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-bold"
+            style={{ background: PANEL, color: GOLD, border: "1px solid #333", opacity: refreshing ? .6 : 1 }}>
+            <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} /> {refreshing ? "Opdaterer…" : "Opdater"}
+          </button>
+          <button onClick={handleShare}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-full text-xs font-bold"
+            style={{ background: copied ? GOLD : PANEL, color: copied ? INK : GOLD, border: `1px solid ${copied ? GOLD : "#333"}` }}>
+            <Share2 size={14} /> {copied ? "Link kopieret!" : "Del"}
+          </button>
         </div>
 
         {state.loading && (
