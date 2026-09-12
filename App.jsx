@@ -2015,8 +2015,13 @@ function SalesLog({ sales, cur, wide, onClear, onDelete, role }) {
   const inPeriod = sales.filter((t) => t.at >= cutoff);
   const buys = inPeriod.filter((t) => t.type !== "sell");
   const sells = inPeriod.filter((t) => t.type === "sell");
-  const udgifter = sum(buys, (t) => t.total);
-  const indtaegter = sum(sells, (t) => t.total);
+  // Skranke-varer må ikke tælle som udgift til deres fulde beløb (det kunden fik) — kun
+  // AVANCEN (grundværdi minus det kunden fik) skal tælle, og den tæller som en INDTÆGT/i
+  // overskuddet, ikke en udgift. Samme regel som kassen: kun avancen rører regnskabet.
+  const buyExpense = (t) => (t.lines || []).filter((l) => !l.isCounter).reduce((a, l) => a + l.sum, 0);
+  const buyCounterProfit = (t) => (t.lines || []).filter((l) => l.isCounter).reduce((a, l) => a + ((l.baseValue || 0) - l.sum), 0);
+  const udgifter = sum(buys, buyExpense);
+  const indtaegter = sum(sells, (t) => t.total) + sum(buys, buyCounterProfit);
   const overskud = indtaegter - udgifter;
 
   return (
