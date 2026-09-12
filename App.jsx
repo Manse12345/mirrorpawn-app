@@ -23,10 +23,6 @@ const DEFAULT_CONFIG = {
   shopName: "Udbetalingsberegner",
   currency: "kr.",
   categories: ["Materialer", "Heists", "Våben & Udstyr", "Andet"],
-  // Kategorier til "Skranke-vare" (unikke værdigenstande købt af kunder — smykker, malerier,
-  // ure, ringe m.m. — sælges videre til spillets skranke for 100% af grundværdien).
-  // Kan udvides/rettes i "Rediger" uden kodeændring, se PriceSettings.
-  counterCategories: ["Smykke", "Maleri", "Ur", "Ring"],
   pointsPer: 1000,
   levels: [
     { name: "Bronze", min: 0 },
@@ -355,9 +351,9 @@ export default function App() {
   // "Skranke-vare": unikke værdigenstande (smykker, malerier, ure, ringe) købt af kunden
   // og videresolgt til spillets skranke for 100% af grundværdien. Håndteres separat fra
   // cart/materials — indgår kun i den aktuelle handel, ikke i det faste lager.
-  const [counterItems, setCounterItems] = useState([]); // [{ id, cat, baseValue, pct, payout, profit }]
+  const [counterItems, setCounterItems] = useState([]); // [{ id, note, baseValue, pct, payout, profit }]
   const [showCounterForm, setShowCounterForm] = useState(false);
-  const [counterForm, setCounterForm] = useState({ cat: "", baseValue: "", pct: 90 });
+  const [counterForm, setCounterForm] = useState({ note: "", baseValue: "", pct: 90 });
   // Skifter Køb/Sælg uden at miste det, man har tastet ind — kun prisen pr. linje
   // regnes om til den nye tilstands standardpris (køb- eller salgspris).
   const switchTradeMode = (m) => {
@@ -532,7 +528,7 @@ export default function App() {
   // Skranke-varer indgår i kurven på linje med materialer: "price"/"sum" = hvad kunden får
   // udbetalt (grundværdi × procent), "sellSum" = grundværdien (100%, det vi får fra skranken).
   const counterLines = tradeMode === "buy" ? counterItems.map((it) => ({
-    m: { id: it.id, name: `Skranke: ${it.cat}`, unit: "stk." },
+    m: { id: it.id, name: it.note ? `Skranke-vare: ${it.note}` : "Skranke-vare", unit: "stk." },
     qty: 1, price: it.payout, sum: it.payout, sellSum: it.baseValue, costSum: it.payout, stock: null,
     isCounter: true, counter: it,
   })) : [];
@@ -629,7 +625,7 @@ export default function App() {
       type: tradeMode,
       lines: lines.map((l) => ({
         id: l.m.id, name: l.m.name, qty: l.qty, price: l.price, unit: l.m.unit, sum: l.sum, sellSum: l.sellSum,
-        ...(l.isCounter ? { isCounter: true, cat: l.counter.cat, baseValue: l.counter.baseValue, pct: l.counter.pct } : {}),
+        ...(l.isCounter ? { isCounter: true, note: l.counter.note, baseValue: l.counter.baseValue, pct: l.counter.pct } : {}),
       })),
       total, sellTotal, profit,
       sellerId: profile.id, sellerName: profile.name, commission: 0,
@@ -964,19 +960,17 @@ export default function App() {
                         <div className="rounded-lg p-3 space-y-2" style={{ background: "#111", border: "1px solid #333" }}>
                           <div className="flex items-center justify-between">
                             <div className="text-[10px] uppercase tracking-widest font-bold" style={{ color: GOLD }}>Skranke-vare</div>
-                            <button onClick={() => { setShowCounterForm(false); setCounterForm({ cat: "", baseValue: "", pct: 90 }); }}
+                            <button onClick={() => { setShowCounterForm(false); setCounterForm({ note: "", baseValue: "", pct: 90 }); }}
                               aria-label="Luk" className="w-5 h-5 rounded-full flex items-center justify-center" style={{ color: "#9ca3af" }}>
                               <X size={13} />
                             </button>
                           </div>
                           <label className="block">
-                            <div className="text-[10px] font-bold mb-1" style={{ color: "#9ca3af" }}>Kategori</div>
-                            <select value={counterForm.cat || (config.counterCategories || [])[0] || ""}
-                              onChange={(e) => setCounterForm((f) => ({ ...f, cat: e.target.value }))}
+                            <div className="text-[10px] font-bold mb-1" style={{ color: "#9ca3af" }}>Note (valgfri)</div>
+                            <input value={counterForm.note} placeholder="Note (fx smykke, maleri) — valgfri"
+                              onChange={(e) => setCounterForm((f) => ({ ...f, note: e.target.value }))}
                               className="w-full rounded-lg border px-2 py-1.5 text-sm font-bold"
-                              style={{ borderColor: "#444", background: PANEL, color: "white" }}>
-                              {(config.counterCategories || []).map((c) => <option key={c} value={c}>{c}</option>)}
-                            </select>
+                              style={{ borderColor: "#444", background: PANEL, color: "white" }} />
                           </label>
                           <div className="flex items-center gap-2">
                             <label className="flex-1 min-w-0 block">
@@ -1011,12 +1005,12 @@ export default function App() {
                               if (bv <= 0) return;
                               const pct = Math.max(0, Math.min(100, +counterForm.pct || 0));
                               const payout = Math.round(bv * pct) / 100;
-                              const cat = counterForm.cat || (config.counterCategories || [])[0] || "Andet";
+                              const note = counterForm.note.trim();
                               setCounterItems((prev) => [...prev, {
                                 id: "c" + Date.now() + Math.random().toString(36).slice(2, 7),
-                                cat, baseValue: bv, pct, payout, profit: bv - payout,
+                                note, baseValue: bv, pct, payout, profit: bv - payout,
                               }]);
-                              setCounterForm({ cat, baseValue: "", pct });
+                              setCounterForm({ note: "", baseValue: "", pct });
                             }}
                             disabled={!(+counterForm.baseValue > 0)}
                             className="w-full py-2 rounded-lg font-black text-xs disabled:opacity-40"
@@ -1835,7 +1829,7 @@ function ReceiptModal({ trade, config, pending, onConfirm, onCancel, onClose }) 
               </div>
               {l.isCounter && (
                 <div className="text-[11px] text-stone-400">
-                  {l.cat} · Grundværdi {fmt(l.baseValue)} {cur} ({l.pct}%)
+                  Grundværdi {fmt(l.baseValue)} {cur} ({l.pct}%)
                 </div>
               )}
             </div>
@@ -2026,16 +2020,6 @@ function PriceSettings({ config, save, close, wide }) {
     const fallback = catList.filter((x) => x !== c)[0] || "Andet";
     setList(list.map((m) => (m.cat === c ? { ...m, cat: fallback } : m)));
   };
-  // Kategorier til "Skranke-vare" (smykker, malerier, ure, ringe m.m.) — helt separat fra
-  // de almindelige materiale-kategorier ovenfor, da skranke-varer ikke er lagervarer.
-  const [counterCatList, setCounterCatList] = useState(config.counterCategories || ["Smykke", "Maleri", "Ur", "Ring"]);
-  const [newCounterCat, setNewCounterCat] = useState("");
-  const addCounterCat = () => {
-    const n = newCounterCat.trim();
-    if (!n || counterCatList.includes(n)) return;
-    setCounterCatList([...counterCatList, n]); setNewCounterCat("");
-  };
-  const delCounterCat = (c) => setCounterCatList(counterCatList.filter((x) => x !== c));
   const [list, setList] = useState(config.materials);
   const [nm, setNm] = useState({ name: "", price: "", sell: "", unit: "stk." });
 
@@ -2057,7 +2041,6 @@ function PriceSettings({ config, save, close, wide }) {
   const commit = () => save({
     shopName: shopName.trim() || "Udbetalingsberegner", currency: currency.trim() || "kr.",
     categories: catList.length ? catList : ["Materialer"],
-    counterCategories: counterCatList.length ? counterCatList : ["Smykke", "Maleri", "Ur", "Ring"],
     pointsPer: +pointsPer || 1000, levels, materials: list,
   });
 
@@ -2139,29 +2122,6 @@ function PriceSettings({ config, save, close, wide }) {
         </div>
         <div className="text-[11px] mt-1" style={dk ? { color: "#6b7280" } : { color: "#a8a29e" }}>
           Sletter du en kategori, flyttes dens varer til den første tilbageværende. Vælg kategori pr. vare nedenfor.
-        </div>
-      </div>
-      <div>
-        <div className="text-xs font-black uppercase tracking-wider mb-2" style={{ color: dk ? GOLD : BLUE }}>Skranke-vare kategorier</div>
-        <div className="flex flex-wrap gap-2 mb-2">
-          {counterCatList.map((c) => (
-            <span key={c} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-bold border"
-              style={dk ? { borderColor: "#3a3a3a", color: "white", background: PANEL } : { borderColor: "#d6d3d1", color: INK, background: "white" }}>
-              {c}
-              <button onClick={() => delCounterCat(c)} style={{ color: dk ? "#888" : "#a8a29e" }}><X size={14} /></button>
-            </span>
-          ))}
-        </div>
-        <div className="flex items-center gap-2">
-          <input value={newCounterCat} onChange={(e) => setNewCounterCat(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && addCounterCat()}
-            placeholder="Ny kategori (fx Antikvitet)" className={inp + " flex-1 min-w-0"} style={inpStyle} />
-          <button onClick={addCounterCat} disabled={!newCounterCat.trim()}
-            className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0 disabled:opacity-30 font-black"
-            style={{ background: GOLD, color: INK }}><Plus size={18} /></button>
-        </div>
-        <div className="text-[11px] mt-1" style={dk ? { color: "#6b7280" } : { color: "#a8a29e" }}>
-          Bruges i "+ Tilføj skranke-vare" ved køb — unikke værdigenstande (smykker, malerier, ure, ringe) der ikke ligger på det faste lager.
         </div>
       </div>
       <div>
