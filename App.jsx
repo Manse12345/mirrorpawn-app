@@ -1798,7 +1798,8 @@ function CraftCheckModal({ matches, onDecide }) {
               </div>
               <input type="number" inputMode="numeric" min={0} value={qtyMap[m.recipe.name] ?? 0}
                 onChange={(e) => setQty(m.recipe.name, e.target.value)}
-                className="w-16 text-center rounded-lg border border-stone-300 py-2 text-sm font-bold shrink-0" />
+                className="w-16 text-center rounded-lg border border-stone-300 py-2 text-sm font-bold shrink-0"
+                style={{ background: "white", color: INK, colorScheme: "light" }} />
             </div>
           ))}
         </div>
