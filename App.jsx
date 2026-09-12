@@ -1786,6 +1786,7 @@ function LeaderboardAdmin({ sales, cur, wide, settings, onSave }) {
     start_at: toLocalDatetimeInput(settings?.start_at),
     end_at: toLocalDatetimeInput(settings?.end_at),
     active: !!settings?.active,
+    prize_pool: settings?.prize_pool ? String(settings.prize_pool) : "",
   });
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
@@ -1797,8 +1798,9 @@ function LeaderboardAdmin({ sales, cur, wide, settings, onSave }) {
       start_at: toLocalDatetimeInput(settings?.start_at),
       end_at: toLocalDatetimeInput(settings?.end_at),
       active: !!settings?.active,
+      prize_pool: settings?.prize_pool ? String(settings.prize_pool) : "",
     });
-  }, [settings?.name, settings?.start_at, settings?.end_at, settings?.active]);
+  }, [settings?.name, settings?.start_at, settings?.end_at, settings?.active, settings?.prize_pool]);
 
   const save = async () => {
     setBusy(true); setErr("");
@@ -1808,6 +1810,7 @@ function LeaderboardAdmin({ sales, cur, wide, settings, onSave }) {
         start_at: form.start_at ? new Date(form.start_at).toISOString() : null,
         end_at: form.end_at ? new Date(form.end_at).toISOString() : null,
         active: form.active,
+        prize_pool: Math.max(0, +form.prize_pool || 0),
       });
       setSavedFlash(true); setTimeout(() => setSavedFlash(false), 1500);
     } catch (e) { setErr("Kunne ikke gemme — prøv igen."); }
@@ -1830,6 +1833,13 @@ function LeaderboardAdmin({ sales, cur, wide, settings, onSave }) {
         <div>
           <label className="text-[10px] uppercase tracking-widest font-bold" style={{ color: sub }}>Konkurrence-navn</label>
           <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inp} style={inpStyle} />
+        </div>
+        <div>
+          <label className="text-[10px] uppercase tracking-widest font-bold" style={{ color: sub }}>Præmiepulje ({cur})</label>
+          <input type="number" min="0" step="1" inputMode="numeric" value={form.prize_pool}
+            onChange={(e) => setForm({ ...form, prize_pool: e.target.value })}
+            placeholder="fx 1000000" className={inp} style={inpStyle} />
+          <div className="text-[11px] mt-1" style={{ color: sub }}>Vises stort på den offentlige side — vinderen (nr. 1) tager det hele.</div>
         </div>
         <div className="flex gap-2">
           <div className="flex-1 min-w-0">

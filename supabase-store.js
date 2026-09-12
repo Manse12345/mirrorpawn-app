@@ -190,20 +190,20 @@ export async function loadLeaderboardSettings() {
   return data;
 }
 export async function saveLeaderboardSettings(patch) {
-  // patch: { name, start_at, end_at, active }
+  // patch: { name, start_at, end_at, active, prize_pool }
   const { error } = await supabase
     .from("leaderboard").update({ ...patch, updated_at: new Date().toISOString() }).eq("id", 1);
   if (error) throw error;
 }
 // Offentlig, read-only rangliste — bruges af den login-fri /leaderboard-side.
 // Går udelukkende via get_public_leaderboard()-RPC'en (security definer i databasen),
-// som KUN returnerer konkurrence-navn/-periode og kunde-id + beløb — aldrig priser,
-// lager, kasse eller andre kundedata. Anon har ingen direkte adgang til nogen tabel;
-// kun lov til at kalde denne ene funktion. Kræver ikke login.
+// som KUN returnerer konkurrence-navn/-periode/præmiepulje og kunde-id + beløb —
+// aldrig priser, lager, kasse eller andre kundedata. Anon har ingen direkte adgang
+// til nogen tabel; kun lov til at kalde denne ene funktion. Kræver ikke login.
 export async function loadPublicLeaderboard() {
   const { data, error } = await supabase.rpc("get_public_leaderboard");
   if (error) throw error;
-  return data; // { active, name?, start_at?, end_at?, entries?: [{ cust_id, total }] }
+  return data; // { active, name?, start_at?, end_at?, prize_pool?, entries?: [{ cust_id, total }] }
 }
 
 export const supabaseReady = true;
