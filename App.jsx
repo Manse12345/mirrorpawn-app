@@ -152,6 +152,7 @@ function containsWholeWord(haystack, needle) {
 // mellem ord, trimmet), værdien er det rigtige varenavn. Udvid frit efter behov.
 const OCR_NAME_OVERRIDES = {
   "TRE": "Træ",
+  "FLYDENDE GEDNI": "Flydende Gødning",
 };
 // OCR forveksler ofte danske specialtegn med deres "udskrevne" form (fx TRÆ læses som
 // TRE eller TRAE, STÅL som STAL). Behandler æ/ae, ø/oe og å/aa som ens — begge veje —
@@ -160,6 +161,16 @@ function foldDanishChars(s) {
   return (s || "")
     .replace(/AE/g, "E").replace(/Æ/g, "E")
     .replace(/OE/g, "O").replace(/Ø/g, "O")
+    .replace(/AA/g, "A").replace(/Å/g, "A");
+}
+// OCR læser somme tider Ø visuelt som "E" i stedet for at stave den ud som "OE" (fx
+// "GØDNING" -> "GEDNI"). foldDanishChars() ovenfor dækker kun den udskrevne form
+// (OE/AE/AA), så vi prøver også denne variant, hvor Ø/OE foldes til E, ved siden af
+// den almindelige — ellers falder afkortede navne som "FLYDENDE GEDNI" mellem to stole.
+function foldDanishCharsOcrE(s) {
+  return (s || "")
+    .replace(/AE/g, "E").replace(/Æ/g, "E")
+    .replace(/OE/g, "E").replace(/Ø/g, "E")
     .replace(/AA/g, "A").replace(/Å/g, "A");
 }
 function bestMaterialMatch(rawName, materials) {
@@ -175,21 +186,28 @@ function bestMaterialMatch(rawName, materials) {
 
   const target = foldDanishChars(targetRaw);
   const targetNoSpace = target.replace(/\s+/g, "");
+  const targetE = foldDanishCharsOcrE(targetRaw);
+  const targetENoSpace = targetE.replace(/\s+/g, "");
   let best = null, bestScore = -1;
   materials.forEach((m) => {
     const candRaw = normalizeOcr(m.name);
     if (!candRaw) return;
     const cand = foldDanishChars(candRaw);
     const candNoSpace = cand.replace(/\s+/g, "");
-    const dist = levenshtein(target, cand);
+    const candE = foldDanishCharsOcrE(candRaw);
+    const candENoSpace = candE.replace(/\s+/g, "");
+    const dist = Math.min(levenshtein(target, cand), levenshtein(targetE, candE));
     const maxLen = Math.max(target.length, cand.length) || 1;
     const score = 1 - dist / maxLen;
-    const identical = targetNoSpace === candNoSpace;
-    const wholeWord = containsWholeWord(cand, target) || containsWholeWord(target, cand);
+    const identical = targetNoSpace === candNoSpace || targetENoSpace === candENoSpace;
+    const wholeWord = containsWholeWord(cand, target) || containsWholeWord(target, cand)
+      || containsWholeWord(candE, targetE) || containsWholeWord(targetE, candE);
     // Afkortet OCR-navn (fx "RAFFINERET PLAS" fra "RAFFINERET PLAS.", fordi teksten var
     // for lang på bakken) — match hvis det læste navn er begyndelsen af varenavnet.
-    // Krav om mindst 4 tegn undgår korte, tilfældige præfiks-match.
-    const truncated = targetNoSpace.length >= 4 && candNoSpace.startsWith(targetNoSpace);
+    // Krav om mindst 4 tegn undgår korte, tilfældige præfiks-match. Tjekkes i begge
+    // Ø-varianter (Ø->O og Ø->E), så æøå-normaliseringen og afkortnings-reglen spiller sammen.
+    const truncated = (targetNoSpace.length >= 4 && candNoSpace.startsWith(targetNoSpace))
+      || (targetENoSpace.length >= 4 && candENoSpace.startsWith(targetENoSpace));
     const strongEnough = identical || wholeWord || truncated || score >= AUTO_MATCH_SIMILARITY_MIN;
     // Det er altid bedre at lade varen stå som "ukendt" end at gætte forkert.
     if (strongEnough && score > bestScore) { bestScore = score; best = m; }
@@ -255,7 +273,7 @@ const QTY_WHITELIST = "0123456789";
 
 // Skærer billedet op i bakke-felter (5 i bredden, kvadratiske) og OCR'er hvert
 // ikke-tomt felts navn- og antal-område for sig. Returnerer én { raw, name, qty } pr. fundet vare.
-async function scanTrayImage(imgSrc, worker, onProgress) {
+async function scanTrayImage(imgSrc, worker, materials, onProgress) {
   const img = await loadImageEl(imgSrc);
   const canvas = document.createElement("canvas");
   canvas.width = img.naturalWidth;
@@ -291,8 +309,15 @@ async function scanTrayImage(imgSrc, worker, onProgress) {
     await worker.setParameters({ tessedit_char_whitelist: NAME_WHITELIST });
     const { data: nameData } = await worker.recognize(nameCanvas);
     const name = (nameData.text || "").replace(/\s+/g, " ").trim();
-    // Backstop: kassér rester som "4" eller "J" — for korte eller uden bogstaver overhovedet
-    if (name.length < 3 || !/[A-Za-zÆØÅæøå]/.test(name)) continue;
+    // Backstop: kassér rester som "4" eller "J" fra støj i et (ikke-tomt) felt — men kun
+    // hvis navnet hverken er "langt nok" til at være troværdigt i sig selv, ELLER matcher
+    // en kendt vare. Ellers ryger korte, men gyldige, varenavne som "SKO" ud ved en fejl.
+    // Feltet er allerede tjekket for at være ikke-tomt (isNameStripEmpty), så det her handler
+    // udelukkende om at skelne OCR-skrald fra et rigtigt, bare kort, varenavn.
+    const hasLetter = /[A-Za-zÆØÅæøå]/.test(name);
+    if (!hasLetter) continue;
+    const longEnough = name.replace(/\s+/g, "").length >= 3;
+    if (!longEnough && !bestMaterialMatch(name, materials)) continue;
 
     // ANTAL: øverste venstre hjørne (venstre ~35%, øverste ~30%). Øverste højre hjørne (vægt) ignoreres helt.
     const qtyW = cell.w * QTY_WIDTH_RATIO;
@@ -1774,7 +1799,7 @@ function ScanTrayModal({ materials, onApply, onClose }) {
     try {
       const { createWorker } = await import("tesseract.js");
       worker = await createWorker("eng");
-      const parsed = await scanTrayImage(imgSrc, worker, setProgress);
+      const parsed = await scanTrayImage(imgSrc, worker, materials, setProgress);
       if (parsed.length === 0) { setErr("Fandt ingen udfyldte felter eller læselige varenavne i billedet. Prøv et tydeligere/nærmere screenshot af bakken."); setScanning(false); await worker.terminate(); return; }
       setRows(parsed.map((p) => {
         const match = bestMaterialMatch(p.name, materials);
