@@ -146,21 +146,51 @@ function containsWholeWord(haystack, needle) {
   }
   return false;
 }
+// Manuelle OCR→vare-rettelser: bruges når reglerne nedenfor (dansk bogstav-fold,
+// forkortede navne) ikke selv fanger en specifik OCR-fejl. Nøglen er OCR-teksten
+// normaliseret som normalizeOcr() ville skrive den (stort, tegn fjernet, ét mellemrum
+// mellem ord, trimmet), værdien er det rigtige varenavn. Udvid frit efter behov.
+const OCR_NAME_OVERRIDES = {
+  "TRE": "Træ",
+};
+// OCR forveksler ofte danske specialtegn med deres "udskrevne" form (fx TRÆ læses som
+// TRE eller TRAE, STÅL som STAL). Behandler æ/ae, ø/oe og å/aa som ens — begge veje —
+// så matchet er robust uden at skulle liste hver enkelt variant.
+function foldDanishChars(s) {
+  return (s || "")
+    .replace(/AE/g, "E").replace(/Æ/g, "E")
+    .replace(/OE/g, "O").replace(/Ø/g, "O")
+    .replace(/AA/g, "A").replace(/Å/g, "A");
+}
 function bestMaterialMatch(rawName, materials) {
-  const target = normalizeOcr(rawName);
-  if (!target) return null;
+  const targetRaw = normalizeOcr(rawName);
+  if (!targetRaw) return null;
+
+  // 1) Manuel rettelse (se OCR_NAME_OVERRIDES) — slår direkte op på varenavn.
+  const override = OCR_NAME_OVERRIDES[targetRaw];
+  if (override) {
+    const hit = findMaterialByName(materials, override);
+    if (hit) return { material: hit, score: 1 };
+  }
+
+  const target = foldDanishChars(targetRaw);
   const targetNoSpace = target.replace(/\s+/g, "");
   let best = null, bestScore = -1;
   materials.forEach((m) => {
-    const cand = normalizeOcr(m.name);
-    if (!cand) return;
+    const candRaw = normalizeOcr(m.name);
+    if (!candRaw) return;
+    const cand = foldDanishChars(candRaw);
     const candNoSpace = cand.replace(/\s+/g, "");
     const dist = levenshtein(target, cand);
     const maxLen = Math.max(target.length, cand.length) || 1;
     const score = 1 - dist / maxLen;
     const identical = targetNoSpace === candNoSpace;
     const wholeWord = containsWholeWord(cand, target) || containsWholeWord(target, cand);
-    const strongEnough = identical || wholeWord || score >= AUTO_MATCH_SIMILARITY_MIN;
+    // Afkortet OCR-navn (fx "RAFFINERET PLAS" fra "RAFFINERET PLAS.", fordi teksten var
+    // for lang på bakken) — match hvis det læste navn er begyndelsen af varenavnet.
+    // Krav om mindst 4 tegn undgår korte, tilfældige præfiks-match.
+    const truncated = targetNoSpace.length >= 4 && candNoSpace.startsWith(targetNoSpace);
+    const strongEnough = identical || wholeWord || truncated || score >= AUTO_MATCH_SIMILARITY_MIN;
     // Det er altid bedre at lade varen stå som "ukendt" end at gætte forkert.
     if (strongEnough && score > bestScore) { bestScore = score; best = m; }
   });
