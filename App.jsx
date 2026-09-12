@@ -2054,6 +2054,14 @@ function SalesLog({ sales, cur, wide, onClear, onDelete, role }) {
         {inPeriod.map((t) => {
           const d = new Date(t.at);
           const isSell = t.type === "sell";
+          // En handel kan indeholde BÅDE almindelige varer (udgift) OG skranke-varer
+          // (gevinst = avancen). Kun for sådanne blandede/skranke-handler viser vi
+          // NETTO-resultatet i stedet for t.total — almindelige handler uden
+          // skranke-varer viser t.total helt som før.
+          const hasCounter = (t.lines || []).some((l) => l.isCounter);
+          const netAmount = hasCounter ? (buyCounterProfit(t) - buyExpense(t)) : t.total;
+          const isGain = isSell || (hasCounter && netAmount >= 0);
+          const amountPrefix = hasCounter && !isSell && netAmount >= 0 ? "+" : "";
           return (
             <div key={t.id} className="rounded-xl border p-3" style={box}>
               <div className="flex items-center justify-between">
@@ -2064,7 +2072,7 @@ function SalesLog({ sales, cur, wide, onClear, onDelete, role }) {
                   {d.toLocaleDateString("da-DK")} · {d.toTimeString().slice(0, 5)}
                 </div>
                 <div className="flex items-center gap-3">
-                  <span className="font-black tabular-nums" style={{ color: isSell ? (dk ? "#4ade80" : GREEN) : (dk ? "#f87171" : RED) }}>{fmt(t.total)} {cur}</span>
+                  <span className="font-black tabular-nums" style={{ color: isGain ? (dk ? "#4ade80" : GREEN) : (dk ? "#f87171" : RED) }}>{amountPrefix}{fmt(netAmount)} {cur}</span>
                   <button onClick={() => onDelete(t.id)} className="p-1" style={{ color: dk ? "#666" : "#d6d3d1" }}><Trash2 size={14} /></button>
                 </div>
               </div>
