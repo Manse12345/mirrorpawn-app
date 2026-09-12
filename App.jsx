@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, Lock, Package, ArrowLeftRight, Home, Camera, Hammer } from "lucide-react";
+import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, Lock, Package, ArrowLeftRight, Home, Camera, Hammer, Trophy } from "lucide-react";
 import {
   loadConfig, saveConfig as sbSaveConfig, loadSales as sbLoadSales, insertSale, logEvent,
   signIn, signOut, getSession, onAuthChange, loadMyProfile, loadAllProfiles,
@@ -7,6 +7,7 @@ import {
   loadInventory, adjustInventory, setInventoryQty,
   loadCash, adjustCash, setCash,
   deleteCustomer, craftItem,
+  loadLeaderboardSettings, saveLeaderboardSettings,
 } from "./supabase-store.js";
 
 /* ── Pawnshop-beregner ────────────────────────────────────────────
@@ -402,6 +403,8 @@ export default function App() {
   const loadInventoryFn = async () => { try { setInventory(await loadInventory()); } catch (e) {} };
   const [cash, setCashState] = useState(0);
   const loadCashFn = async () => { try { setCashState(await loadCash()); } catch (e) {} };
+  const [lbSettings, setLbSettings] = useState(null); // { name, start_at, end_at, active }
+  const loadLeaderboardFn = async () => { try { setLbSettings(await loadLeaderboardSettings()); } catch (e) {} };
   const [tradeMode, setTradeMode] = useState("buy"); // buy | sell
   const [showScan, setShowScan] = useState(false);
   // "Skranke-vare": unikke værdigenstande (smykker, malerier, ure, ringe) købt af kunden
@@ -516,14 +519,14 @@ export default function App() {
   };
 
   const editingRef = useRef(false);
-  useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); loadCashFn(); } }, [profile]);
+  useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); loadCashFn(); loadLeaderboardFn(); } }, [profile]);
   useEffect(() => {
     if (!profile) return;
     const poll = setInterval(() => {
       // hent nye priser i baggrunden — men aldrig mens ejeren redigerer
-      if (!editingRef.current && document.visibilityState === "visible") { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadCashFn(); }
+      if (!editingRef.current && document.visibilityState === "visible") { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadCashFn(); loadLeaderboardFn(); }
     }, 12000);
-    const onVis = () => { if (document.visibilityState === "visible" && !editingRef.current) { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadCashFn(); } };
+    const onVis = () => { if (document.visibilityState === "visible" && !editingRef.current) { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadCashFn(); loadLeaderboardFn(); } };
     document.addEventListener("visibilitychange", onVis);
     return () => { clearInterval(poll); document.removeEventListener("visibilitychange", onVis); };
   }, [profile]);
@@ -836,6 +839,13 @@ export default function App() {
               <Users size={16} /> Ansatte
             </button>
           )}
+          {canManageStore && (
+            <button onClick={() => { setView(view === "leaderboard" ? "beregner" : "leaderboard"); setShowSettings(false); }}
+              className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
+              style={view === "leaderboard" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+              <Trophy size={16} /> Leaderboard
+            </button>
+          )}
           <button onClick={() => { setView(view === "log" ? "beregner" : "log"); setShowSettings(false); }}
             className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
             style={view === "log" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
@@ -875,6 +885,12 @@ export default function App() {
         <Crafting materials={materials} inventory={inventory} wide={wide} onCraft={handleCraft} />
       ) : view === "ansatte" && !showSettings && isOwner ? (
         <StaffAdmin staffList={staffList} refresh={refreshStaff} myId={profile.id} wide={wide} />
+      ) : view === "leaderboard" && !showSettings && canManageStore ? (
+        <LeaderboardAdmin sales={sales} cur={cur} wide={wide} settings={lbSettings}
+          onSave={async (patch) => {
+            setLbSettings((prev) => ({ ...(prev || {}), ...patch }));
+            await saveLeaderboardSettings(patch);
+          }} />
       ) : view === "log" && !showSettings ? (
         <SalesLog sales={sales} cur={cur} wide={wide} onClear={() => { if (isOwner) saveSales([]); }} role={profile.role}
           onDelete={(id) => saveSales(sales.filter((s) => s.id !== id))} />
@@ -1215,6 +1231,23 @@ function buildCustomers(sales) {
     c.first = Math.min(c.first, t.at); c.last = Math.max(c.last, t.at);
   });
   return Object.values(map).sort((a, b) => b.total - a.total);
+}
+
+// Leaderboard-konkurrence: samme "køb + salg lagt sammen"-logik som Kunder-siden
+// (buildCustomers ovenfor), men afgrænset til konkurrenceperioden i stedet for al
+// historik. startMs/endMs er null/undefined for en åben start/slut.
+function buildLeaderboardRanking(sales, startMs, endMs) {
+  const map = {};
+  sales.forEach((t) => {
+    const id = (t.custId || "").trim();
+    if (!id) return;
+    if (startMs && t.at < startMs) return;
+    if (endMs && t.at > endMs) return;
+    map[id] = (map[id] || 0) + (t.total || 0);
+  });
+  return Object.entries(map)
+    .map(([custId, total]) => ({ custId, total }))
+    .sort((a, b) => b.total - a.total);
 }
 
 function Customers({ sales, config, cur, wide, openCust, setOpenCust, canManage, onDeleteCustomer }) {
@@ -1722,6 +1755,124 @@ function StaffAdmin({ staffList, refresh, myId, wide }) {
       </div>
       <div className="text-[11px] mt-2" style={dk ? { color: "#6b7280" } : { color: "#a8a29e" }}>
         Rollerne styrer adgang: <b>Ansat</b> kan bruge beregneren. <b>Manager</b> kan også redigere priser. <b>Ejer</b> har fuld adgang, inkl. denne side.
+      </div>
+    </div>
+  );
+}
+
+/* ── Leaderboard-konkurrence (styring — kun ejer/manager, se toggleSettings-mønster) ──
+   Den offentlige side, kunderne ser (uden login), er PublicLeaderboard.jsx — en helt
+   separat fil monteret af main.jsx på ruten /leaderboard, som aldrig importerer noget
+   herfra. Denne komponent er kun den interne styring + forhåndsvisning. */
+const toLocalDatetimeInput = (iso) => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+
+function LeaderboardAdmin({ sales, cur, wide, settings, onSave }) {
+  const dk = wide;
+  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const sub = dk ? "#9ca3af" : "#78716c";
+  const inp = "rounded-lg border px-3 py-2 text-sm w-full " + (dk ? "" : "border-stone-300 bg-white");
+  const inpStyle = dk ? { borderColor: "#3a3a3a", background: PANEL, color: "white" } : {};
+  const wrap = "pb-10 " + (dk ? "px-8 pt-6 mx-auto " : "px-3 pt-3 ") + (dk ? "text-white" : "");
+  const wrapStyle = dk ? { maxWidth: PAGE_MAX } : {};
+
+  const [form, setForm] = useState({
+    name: settings?.name || "Konkurrence",
+    start_at: toLocalDatetimeInput(settings?.start_at),
+    end_at: toLocalDatetimeInput(settings?.end_at),
+    active: !!settings?.active,
+  });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [savedFlash, setSavedFlash] = useState(false);
+
+  useEffect(() => {
+    setForm({
+      name: settings?.name || "Konkurrence",
+      start_at: toLocalDatetimeInput(settings?.start_at),
+      end_at: toLocalDatetimeInput(settings?.end_at),
+      active: !!settings?.active,
+    });
+  }, [settings?.name, settings?.start_at, settings?.end_at, settings?.active]);
+
+  const save = async () => {
+    setBusy(true); setErr("");
+    try {
+      await onSave({
+        name: form.name.trim() || "Konkurrence",
+        start_at: form.start_at ? new Date(form.start_at).toISOString() : null,
+        end_at: form.end_at ? new Date(form.end_at).toISOString() : null,
+        active: form.active,
+      });
+      setSavedFlash(true); setTimeout(() => setSavedFlash(false), 1500);
+    } catch (e) { setErr("Kunne ikke gemme — prøv igen."); }
+    setBusy(false);
+  };
+
+  const ranking = buildLeaderboardRanking(
+    sales,
+    form.start_at ? new Date(form.start_at).getTime() : null,
+    form.end_at ? new Date(form.end_at).getTime() : null
+  );
+  const publicUrl = typeof window !== "undefined" ? `${window.location.origin}/leaderboard` : "/leaderboard";
+
+  return (
+    <div className={wrap} style={wrapStyle}>
+      <div className="text-xs font-black uppercase tracking-wider mb-2" style={{ color: dk ? GOLD : BLUE }}>Leaderboard-konkurrence</div>
+      {err && <div className="text-xs font-semibold mb-2" style={{ color: RED }}>{err}</div>}
+
+      <div className="rounded-xl border p-4 space-y-3 mb-4" style={box}>
+        <div>
+          <label className="text-[10px] uppercase tracking-widest font-bold" style={{ color: sub }}>Konkurrence-navn</label>
+          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inp} style={inpStyle} />
+        </div>
+        <div className="flex gap-2">
+          <div className="flex-1 min-w-0">
+            <label className="text-[10px] uppercase tracking-widest font-bold" style={{ color: sub }}>Start</label>
+            <input type="datetime-local" value={form.start_at} onChange={(e) => setForm({ ...form, start_at: e.target.value })} className={inp} style={inpStyle} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <label className="text-[10px] uppercase tracking-widest font-bold" style={{ color: sub }}>Slut</label>
+            <input type="datetime-local" value={form.end_at} onChange={(e) => setForm({ ...form, end_at: e.target.value })} className={inp} style={inpStyle} />
+          </div>
+        </div>
+        <button onClick={() => setForm({ ...form, active: !form.active })}
+          className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg font-bold text-sm text-left"
+          style={form.active ? { background: GREEN, color: "white" } : { background: dk ? "#2a2a2a" : "#f5f5f4", color: sub }}>
+          <span>Konkurrence er {form.active ? "AKTIV — synlig på den offentlige side" : "inaktiv — skjult for offentligheden"}</span>
+          <span className="inline-flex items-center shrink-0 w-9 h-5 rounded-full relative ml-2" style={{ background: form.active ? "rgba(255,255,255,.35)" : (dk ? "#444" : "#d6d3d1") }}>
+            <span className="absolute w-4 h-4 top-0.5 rounded-full bg-white" style={{ left: form.active ? 18 : 2 }} />
+          </span>
+        </button>
+        <button disabled={busy} onClick={save} className="w-full py-2.5 rounded-lg font-black text-sm" style={{ background: GOLD, color: INK }}>
+          <Save size={15} className="inline mr-1" /> {savedFlash ? "Gemt!" : "Gem indstillinger"}
+        </button>
+        <div className="text-[11px] break-all" style={{ color: sub }}>
+          Offentligt link (ingen login nødvendig): <span className="font-mono" style={{ color: dk ? GOLD : BLUE }}>{publicUrl}</span>
+        </div>
+      </div>
+
+      <div className="text-xs font-black uppercase tracking-wider mb-2" style={{ color: dk ? GOLD : BLUE }}>
+        Forhåndsvisning af rangliste ({ranking.length})
+      </div>
+      <div className="space-y-1.5">
+        {ranking.length === 0 && (
+          <div className="text-sm py-6 text-center" style={{ color: sub }}>Ingen handler i den valgte periode endnu.</div>
+        )}
+        {ranking.map((r, i) => (
+          <div key={r.custId} className="flex items-center justify-between rounded-xl border px-3 py-2.5" style={box}>
+            <div className="flex items-center gap-2">
+              <span className="font-black w-6 text-center" style={{ color: i === 0 ? GOLD : sub }}>{i + 1}</span>
+              <span className="font-bold" style={{ color: dk ? "white" : INK }}>{r.custId}</span>
+            </div>
+            <span className="font-black" style={{ color: dk ? GOLD : BLUE }}>{fmt(r.total)} {cur}</span>
+          </div>
+        ))}
       </div>
     </div>
   );

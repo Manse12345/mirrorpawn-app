@@ -180,4 +180,30 @@ export async function setCash(amount) {
   if (error) throw error;
 }
 
+// ---- Leaderboard-konkurrence ----
+// Indstillinger (navn/periode/aktiv) styres af ejer/manager inde i appen — se
+// LeaderboardAdmin i App.jsx. RLS på "leaderboard"-tabellen tillader kun ejer/manager
+// at SKRIVE (tjekket i databasen, ikke kun i UI'en), men enhver indlogget kan læse.
+export async function loadLeaderboardSettings() {
+  const { data, error } = await supabase.from("leaderboard").select("*").eq("id", 1).single();
+  if (error) throw error;
+  return data;
+}
+export async function saveLeaderboardSettings(patch) {
+  // patch: { name, start_at, end_at, active }
+  const { error } = await supabase
+    .from("leaderboard").update({ ...patch, updated_at: new Date().toISOString() }).eq("id", 1);
+  if (error) throw error;
+}
+// Offentlig, read-only rangliste — bruges af den login-fri /leaderboard-side.
+// Går udelukkende via get_public_leaderboard()-RPC'en (security definer i databasen),
+// som KUN returnerer konkurrence-navn/-periode og kunde-id + beløb — aldrig priser,
+// lager, kasse eller andre kundedata. Anon har ingen direkte adgang til nogen tabel;
+// kun lov til at kalde denne ene funktion. Kræver ikke login.
+export async function loadPublicLeaderboard() {
+  const { data, error } = await supabase.rpc("get_public_leaderboard");
+  if (error) throw error;
+  return data; // { active, name?, start_at?, end_at?, entries?: [{ cust_id, total }] }
+}
+
 export const supabaseReady = true;
