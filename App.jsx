@@ -8,6 +8,7 @@ import {
   loadCash, adjustCash, setCash,
   deleteCustomer, craftItem,
   loadLeaderboardSettings, saveLeaderboardSettings,
+  loadCustomerPhones, saveCustomerPhone,
 } from "./supabase-store.js";
 
 /* ── Pawnshop-beregner ────────────────────────────────────────────
@@ -405,6 +406,8 @@ export default function App() {
   const loadCashFn = async () => { try { setCashState(await loadCash()); } catch (e) {} };
   const [lbSettings, setLbSettings] = useState(null); // { name, start_at, end_at, active }
   const loadLeaderboardFn = async () => { try { setLbSettings(await loadLeaderboardSettings()); } catch (e) {} };
+  const [customerPhones, setCustomerPhones] = useState({}); // cust_id -> phone
+  const loadCustomerPhonesFn = async () => { try { setCustomerPhones(await loadCustomerPhones()); } catch (e) {} };
   const [tradeMode, setTradeMode] = useState("buy"); // buy | sell
   const [showScan, setShowScan] = useState(false);
   // "Skranke-vare": unikke værdigenstande (smykker, malerier, ure, ringe) købt af kunden
@@ -519,14 +522,14 @@ export default function App() {
   };
 
   const editingRef = useRef(false);
-  useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); loadCashFn(); loadLeaderboardFn(); } }, [profile]);
+  useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); } }, [profile]);
   useEffect(() => {
     if (!profile) return;
     const poll = setInterval(() => {
       // hent nye priser i baggrunden — men aldrig mens ejeren redigerer
-      if (!editingRef.current && document.visibilityState === "visible") { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadCashFn(); loadLeaderboardFn(); }
+      if (!editingRef.current && document.visibilityState === "visible") { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); }
     }, 12000);
-    const onVis = () => { if (document.visibilityState === "visible" && !editingRef.current) { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadCashFn(); loadLeaderboardFn(); } };
+    const onVis = () => { if (document.visibilityState === "visible" && !editingRef.current) { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); } };
     document.addEventListener("visibilitychange", onVis);
     return () => { clearInterval(poll); document.removeEventListener("visibilitychange", onVis); };
   }, [profile]);
@@ -869,7 +872,12 @@ export default function App() {
 
       {view === "kunder" && !showSettings ? (
         <Customers sales={sales} config={config} cur={cur} wide={wide} openCust={openCust} setOpenCust={setOpenCust}
-          canManage={canManageStore} onDeleteCustomer={handleDeleteCustomer} />
+          canManage={canManageStore} onDeleteCustomer={handleDeleteCustomer}
+          phones={customerPhones}
+          onSavePhone={async (custIdVal, phone) => {
+            setCustomerPhones((prev) => ({ ...prev, [custIdVal]: phone }));
+            try { await saveCustomerPhone(custIdVal, phone); } catch (e) {}
+          }} />
       ) : view === "lager" && !showSettings ? (
         <InventoryView materials={materials} inventory={inventory} cur={cur} wide={wide} canEdit={canManageStore}
           cash={cash} tradeCounts={tradeCounts}
@@ -1253,7 +1261,43 @@ function buildLeaderboardRanking(sales, startMs, endMs) {
     .sort((a, b) => b.total - a.total);
 }
 
-function Customers({ sales, config, cur, wide, openCust, setOpenCust, canManage, onDeleteCustomer }) {
+// Telefonnummer på en kunde — kun synligt/redigerbart bag login her på kundeprofilen.
+// Kommer ALDRIG med i den offentlige leaderboard (get_public_leaderboard() rører
+// aldrig "customers"-tabellen, og PublicLeaderboard.jsx henter den slet ikke).
+// key={custId} på kaldsstedet nulstiller inputfeltet, når man skifter kunde.
+function CustomerPhoneEditor({ dk, box, sub, phone, onSave }) {
+  const [value, setValue] = useState(phone || "");
+  const [busy, setBusy] = useState(false);
+  const [savedFlash, setSavedFlash] = useState(false);
+  const dirty = value.trim() !== (phone || "").trim();
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await onSave(value.trim());
+      setSavedFlash(true); setTimeout(() => setSavedFlash(false), 1500);
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="rounded-xl border p-4 mb-3" style={box}>
+      <div className="text-[10px] uppercase font-bold mb-1" style={{ color: sub }}>Telefonnummer</div>
+      <div className="flex items-center gap-2">
+        <input value={value} onChange={(e) => setValue(e.target.value)} placeholder="Ikke noteret" inputMode="tel"
+          className="flex-1 min-w-0 rounded-lg border px-3 py-2 text-sm"
+          style={dk ? { borderColor: "#3a3a3a", background: PANEL, color: "white" } : { borderColor: "#d6d3d1" }} />
+        {dirty && (
+          <button disabled={busy} onClick={save} className="px-3 py-2 rounded-lg font-bold text-xs shrink-0" style={{ background: GOLD, color: INK }}>
+            {savedFlash ? "Gemt!" : (busy ? "Gemmer…" : "Gem")}
+          </button>
+        )}
+      </div>
+      <div className="text-[10px] mt-1" style={{ color: sub }}>Kun synligt her, bag login — vises aldrig på den offentlige leaderboard-side.</div>
+    </div>
+  );
+}
+
+function Customers({ sales, config, cur, wide, openCust, setOpenCust, canManage, onDeleteCustomer, phones, onSavePhone }) {
   const [q, setQ] = useState("");
   const dk = wide;
   const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
@@ -1312,6 +1356,8 @@ function Customers({ sales, config, cur, wide, openCust, setOpenCust, canManage,
             </div>
           </div>
         </div>
+        <CustomerPhoneEditor key={c.id} dk={dk} box={box} sub={sub}
+          phone={phones?.[c.id] || ""} onSave={(phone) => onSavePhone(c.id, phone)} />
         <div className="grid grid-cols-3 gap-2 mb-3">
           {[["Handler", c.trades.length], ["Omsætning", fmt(c.total) + " " + cur], ["Avance", fmt(c.profit) + " " + cur]].map(([l, v]) => (
             <div key={l} className="rounded-xl border p-3" style={box}>

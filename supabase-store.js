@@ -86,6 +86,28 @@ export async function loadSales(limit = 500) {
 export async function deleteCustomer(custId) {
   const { error } = await supabase.from("sales").delete().eq("cust_id", custId);
   if (error) throw error;
+  // Ryd et evt. gemt telefonnummer med — fejler stille, hvis der ikke var et.
+  try { await supabase.from("customers").delete().eq("id", custId); } catch (e) {}
+}
+
+// ---- Kunde-telefonnummer ----
+// Kunder har ellers ingen egen tabel — de er udledt af sales.cust_id. Denne tabel
+// gemmer UDELUKKENDE et telefonnummer pr. kunde-id, så man kan ringe til fx vinderen
+// af en leaderboard-konkurrence. Samme RLS-niveau som resten af kundedata (kun
+// authenticated) — nummeret indgår ALDRIG i get_public_leaderboard() eller nogen
+// anden offentlig sti.
+export async function loadCustomerPhones() {
+  const { data, error } = await supabase.from("customers").select("id, phone");
+  if (error) throw error;
+  const map = {};
+  (data || []).forEach((r) => { if (r.phone) map[r.id] = r.phone; });
+  return map;
+}
+export async function saveCustomerPhone(custId, phone) {
+  const { error } = await supabase
+    .from("customers")
+    .upsert({ id: custId, phone: phone || null, updated_at: new Date().toISOString() });
+  if (error) throw error;
 }
 export async function insertSale(trade) {
   // trade: { at, custId, lines, total, sellTotal, profit, points, sellerId, sellerName, commission, type }
