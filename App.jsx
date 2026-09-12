@@ -1212,7 +1212,10 @@ export default function App() {
 
 /* ── Kunder & loyalitet ── */
 function levelFor(points, levels) {
-  const ls = [...(levels || [{ name: "Bronze", min: 0 }])].sort((a, b) => a.min - b.min);
+  // "levels && levels.length" (ikke bare "levels ||") — en TOM liste (fx hvis alle
+  // niveauer er slettet i Rediger) er stadig "truthy" og ville ellers give ls = [],
+  // så cur forblev undefined og commitTrade crashede på .cur.name for ALLE handler.
+  const ls = [...(levels && levels.length ? levels : [{ name: "Bronze", min: 0 }])].sort((a, b) => a.min - b.min);
   let cur = ls[0], next = null;
   for (let i = 0; i < ls.length; i++) {
     if (points >= ls[i].min) { cur = ls[i]; next = ls[i + 1] || null; }
@@ -2367,7 +2370,9 @@ function PriceSettings({ config, save, close, wide }) {
                 className={inp + " flex-1 min-w-0"} style={inpStyle} />
               <input type="number" inputMode="numeric" value={lv.min} onChange={(e) => setLevels(levels.map((x, j) => j === i ? { ...x, min: +e.target.value } : x))}
                 className={inp + " w-24"} style={inpStyle} />
-              <button onClick={() => setLevels(levels.filter((_, j) => j !== i))} className="p-1" style={{ color: dk ? "#666" : "#d6d3d1" }}><Trash2 size={15} /></button>
+              <button onClick={() => { if (levels.length > 1) setLevels(levels.filter((_, j) => j !== i)); }}
+                disabled={levels.length <= 1} title={levels.length <= 1 ? "Mindst ét niveau skal blive stående" : "Slet niveau"}
+                className="p-1" style={{ color: dk ? "#666" : "#d6d3d1", opacity: levels.length <= 1 ? .35 : 1 }}><Trash2 size={15} /></button>
             </div>
           ))}
           <button onClick={() => setLevels([...levels, { name: "Nyt niveau", min: 0 }])}
