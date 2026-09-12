@@ -323,6 +323,10 @@ export default function App() {
   const [view, setView] = useState("beregner"); // beregner | log | kunder | ansatte
   const [receipt, setReceipt] = useState(null);
   const [craftCheck, setCraftCheck] = useState(null); // { matches: [{ recipe, soldQty }] } — "craftede du disse?" efter et salg
+  // Et SALG der afventer bekræftelse i kvitteringen — intet er bogført endnu (se commitTrade/finalizeTrade/cancelTrade).
+  // Køb bogføres stadig med det samme og bruger ikke denne (forbliver null).
+  const [pendingTrade, setPendingTrade] = useState(null);
+  const [pendingCraftChoices, setPendingCraftChoices] = useState({}); // recipe-navn -> antal valgt i "Craftede du disse?"
   const [activeCat, setActiveCat] = useState("Alle");
   const [savedFlash, setSavedFlash] = useState(false);
   const [custId, setCustId] = useState("");
@@ -447,35 +451,6 @@ export default function App() {
     });
   };
 
-  // "Craftede du disse?" efter et salg: trækker KUN opskriftens materialer fra lageret
-  // (ingen ny færdigvare lægges til — den blev jo lige solgt). Bruges af CraftCheckModal.
-  const handleCraftConsumeOnly = async (recipe, qty) => {
-    qty = Math.max(0, Math.floor(+qty) || 0);
-    if (qty <= 0) return;
-
-    const consumed = recipe.mats.map((rm) => {
-      const mat = findMaterialByName(config.materials, rm.name);
-      if (!mat) throw new Error(`Ukendt materiale: ${rm.name}`);
-      return { material_id: mat.id, name: mat.name, qty: rm.qty * qty };
-    });
-
-    for (const c of consumed) {
-      const have = inventory[c.material_id] || 0;
-      if (have < c.qty) throw new Error(`Ikke nok ${c.name} på lager — har ${have}, kræver ${c.qty}.`);
-    }
-
-    try {
-      await consumeCraftMaterials(consumed.map(({ material_id, qty }) => ({ material_id, qty })));
-    } catch (e) {
-      throw new Error("Lageret nåede at ændre sig i mellemtiden. Prøv igen.");
-    }
-
-    setInventory((prev) => {
-      const next = { ...prev };
-      consumed.forEach((c) => { next[c.material_id] = (next[c.material_id] || 0) - c.qty; });
-      return next;
-    });
-  };
   const editingRef = useRef(false);
   useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); loadCashFn(); } }, [profile]);
   useEffect(() => {
@@ -560,7 +535,68 @@ export default function App() {
 
   const cats = ["Alle", ...(config.categories || ["Materialer"])];
 
-  const saveTrade = () => {
+  // Bogfører en handel: gemmer den i databasen, justerer lager og kasse, trækker evt.
+  // valgte craft-materialer (kun relevant ved salg), og logger til Discord. Alt sker
+  // samlet herfra — enten alt sammen, eller (ved en fejl undervejs) intet af det bliver
+  // synligt lokalt, fordi de lokale state-opdateringer sker FØR de asynkrone DB-kald.
+  const commitTrade = (trade, craftChoices) => {
+    // beregn evt. niveau-skift FØR vs EFTER for kunden (kun ved køb — points gives ikke ved salg)
+    const custIdVal = trade.custId;
+    let prevPoints = 0;
+    if (custIdVal) sales.forEach((t) => { if ((t.custId || "") === custIdVal) prevPoints += (t.points || 0); });
+    const wasNew = trade.type === "buy" && custIdVal && prevPoints === 0;
+    const beforeLvl = levelFor(prevPoints, config.levels).cur.name;
+    const afterLvl = levelFor(prevPoints + trade.points, config.levels).cur.name;
+
+    // lager: op ved køb, ned ved salg. Kasse: ned ved køb (I betaler ud), op ved salg (I modtager)
+    const invDelta = trade.type === "buy" ? 1 : -1;
+    const cashDelta = trade.type === "buy" ? -trade.total : trade.total;
+
+    // craft-materialer valgt i "Craftede du disse?" — læg alle valgte opskrifter sammen
+    // til én samlet materiale-liste (i tilfælde af at to opskrifter deler et råmateriale)
+    const craftDeltaByMat = {};
+    Object.entries(craftChoices || {}).forEach(([recipeName, rawQty]) => {
+      const qty = Math.max(0, Math.floor(+rawQty) || 0);
+      if (qty <= 0) return;
+      const recipe = findRecipeByName(recipeName);
+      if (!recipe) return;
+      recipe.mats.forEach((rm) => {
+        const mat = findMaterialByName(config.materials, rm.name);
+        if (!mat) return;
+        craftDeltaByMat[mat.id] = (craftDeltaByMat[mat.id] || 0) + rm.qty * qty;
+      });
+    });
+    const craftConsumed = Object.entries(craftDeltaByMat).map(([material_id, qty]) => ({ material_id, qty }));
+
+    setInventory((prev) => {
+      const next = { ...prev };
+      trade.lines.forEach((l) => { next[l.id] = (next[l.id] || 0) + invDelta * l.qty; });
+      craftConsumed.forEach((c) => { next[c.material_id] = (next[c.material_id] || 0) - c.qty; });
+      return next;
+    });
+    setCashState((prev) => prev + cashDelta);
+    setSales((prev) => [trade, ...prev].slice(0, 500));
+    setSavedFlash(true); setTimeout(() => setSavedFlash(false), 1500);
+    if (navigator.vibrate) navigator.vibrate(40);
+
+    // skriv til databasen + log hændelser til Discord
+    (async () => {
+      try {
+        await insertSale(trade);
+        await Promise.all(trade.lines.map((l) => adjustInventory(l.id, invDelta * l.qty)));
+        await adjustCash(cashDelta);
+        if (craftConsumed.length > 0) await consumeCraftMaterials(craftConsumed);
+        if (custIdVal && wasNew) await logEvent("newcustomer", { custId: custIdVal });
+        if (custIdVal && afterLvl !== beforeLvl) await logEvent("levelup", { custId: custIdVal, level: afterLvl, points: prevPoints + trade.points });
+      } catch (e) {}
+    })();
+  };
+
+  // Tryk på "Gem salg & kvittering" / "Gem handel & kvittering". Bygger handlen ud fra
+  // kurven. KØB bogføres stadig med det samme, som hidtil (kvitteringen er bare en
+  // visning bagefter). SALG bogføres INTET endnu — handlen afventer i stedet "Craftede
+  // du disse?" (hvis relevant) og bekræftelse i kvitteringen (finalizeTrade/cancelTrade).
+  const beginSaveTrade = () => {
     if (lines.length === 0) return;
     const pts = tradeMode === "buy" ? Math.floor(total / (config.pointsPer || 1000)) : 0;
     const trade = {
@@ -572,50 +608,50 @@ export default function App() {
       total, sellTotal, profit,
       sellerId: profile.id, sellerName: profile.name, commission: 0,
     };
-    // beregn evt. niveau-skift FØR vs EFTER for kunden (kun ved køb — points gives ikke ved salg)
-    const id = custId.trim();
-    let prevPoints = 0;
-    if (id) sales.forEach((t) => { if ((t.custId || "") === id) prevPoints += (t.points || 0); });
-    const wasNew = tradeMode === "buy" && id && prevPoints === 0;
-    const beforeLvl = levelFor(prevPoints, config.levels).cur.name;
-    const afterLvl = levelFor(prevPoints + pts, config.levels).cur.name;
 
-    // lager: op ved køb, ned ved salg. Kasse: ned ved køb (I betaler ud), op ved salg (I modtager)
-    const invDelta = tradeMode === "buy" ? 1 : -1;
-    const cashDelta = tradeMode === "buy" ? -total : total;
-    setInventory((prev) => {
-      const next = { ...prev };
-      trade.lines.forEach((l) => { next[l.id] = (next[l.id] || 0) + invDelta * l.qty; });
-      return next;
-    });
-    setCashState((prev) => prev + cashDelta);
-
-    setSales([trade, ...sales].slice(0, 500));
-    setReceipt(trade);
-    // "Craftede du disse?" — kun relevant ved salg TIL kunde, og kun for de linjer,
-    // der matcher en af de 19 crafting-opskrifter (navnematch, ikke case/mellemrum-følsomt).
-    if (tradeMode === "sell") {
-      const matches = trade.lines
-        .map((l) => ({ recipe: findRecipeByName(l.name), soldQty: l.qty }))
-        .filter((m) => m.recipe);
-      setCraftCheck(matches.length > 0 ? { matches } : null);
-    } else {
-      setCraftCheck(null);
+    if (tradeMode === "buy") {
+      commitTrade(trade, {});
+      setReceipt(trade);
+      setCart({}); setCustId("");
+      return;
     }
-    setSavedFlash(true); setTimeout(() => setSavedFlash(false), 1500);
-    if (navigator.vibrate) navigator.vibrate(40);
-    setCart({}); setCustId("");
 
-    // skriv til databasen + log hændelser til Discord
-    (async () => {
-      try {
-        await insertSale(trade);
-        await Promise.all(trade.lines.map((l) => adjustInventory(l.id, invDelta * l.qty)));
-        await adjustCash(cashDelta);
-        if (id && wasNew) await logEvent("newcustomer", { custId: id });
-        if (id && afterLvl !== beforeLvl) await logEvent("levelup", { custId: id, level: afterLvl, points: prevPoints + pts });
-      } catch (e) {}
-    })();
+    // Salg: intet bogført endnu. "Craftede du disse?" vises kun for linjer, der matcher
+    // en af de 19 crafting-opskrifter (navnematch, ikke case/mellemrum-følsomt).
+    setPendingTrade(trade);
+    setPendingCraftChoices({});
+    const matches = trade.lines
+      .map((l) => ({ recipe: findRecipeByName(l.name), soldQty: l.qty }))
+      .filter((m) => m.recipe);
+    if (matches.length > 0) { setCraftCheck({ matches }); return; }
+    setReceipt(trade);
+  };
+
+  // Brugerens valg fra "Craftede du disse?" — trækker INTET fra lageret endnu, gemmer
+  // blot hvilke antal der skal craft-trækkes samlet, når salget bogføres ved "Færdig".
+  const handleCraftDecision = (qtyMap) => {
+    setPendingCraftChoices(qtyMap);
+    setCraftCheck(null);
+    setReceipt(pendingTrade);
+  };
+
+  // Kvitteringens ✕: annullér HELE den afventende salgshandel. Intet salg, lager, kasse,
+  // craft-træk eller Discord-post — som om "Gem salg & kvittering" aldrig blev trykket.
+  // Kurven bevares, så man kan rette og prøve igen.
+  const cancelTrade = () => {
+    setPendingTrade(null);
+    setPendingCraftChoices({});
+    setReceipt(null);
+    setCraftCheck(null);
+  };
+
+  // Kvitteringens "Færdig" (kun for salg, der afventer bekræftelse): bogfør hele
+  // handlen nu — salg, lager, kasse og craft-materialer samlet.
+  const finalizeTrade = () => {
+    if (!pendingTrade) return;
+    commitTrade(pendingTrade, pendingCraftChoices);
+    setCart({}); setCustId("");
+    setReceipt(null); setPendingTrade(null); setPendingCraftChoices({});
   };
 
   return (
@@ -883,7 +919,7 @@ export default function App() {
                   </div>
                   {lines.length > 0 && (
                     <div className="mt-2 space-y-2">
-                      <button onClick={() => saveTrade()}
+                      <button onClick={() => beginSaveTrade()}
                         className="w-full flex items-center justify-center gap-1.5 px-4 py-3 rounded-xl font-black text-base"
                         style={{ background: tradeMode === "sell" ? GREEN : GOLD, color: tradeMode === "sell" ? "white" : INK }}>
                         <Save size={18} /> {tradeMode === "sell" ? "Gem salg & kvittering" : "Gem handel & kvittering"}
@@ -903,9 +939,10 @@ export default function App() {
       )}
 
       {receipt ? (
-        <ReceiptModal trade={receipt} config={config} onClose={() => setReceipt(null)} />
+        <ReceiptModal trade={receipt} config={config} pending={!!pendingTrade}
+          onConfirm={finalizeTrade} onCancel={cancelTrade} onClose={() => setReceipt(null)} />
       ) : craftCheck ? (
-        <CraftCheckModal matches={craftCheck.matches} onConsume={handleCraftConsumeOnly} onClose={() => setCraftCheck(null)} />
+        <CraftCheckModal matches={craftCheck.matches} onDecide={handleCraftDecision} />
       ) : null}
       {showScan && <ScanTrayModal materials={materials} onApply={applyScannedItems} onClose={() => setShowScan(false)} />}
 
@@ -942,7 +979,7 @@ export default function App() {
               </div>
             </div>
             {lines.length > 0 && (
-              <button onClick={() => saveTrade()}
+              <button onClick={() => beginSaveTrade()}
                 className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl font-black text-white" style={{ background: INK }}>
                 <Save size={16} /> Gem
               </button>
@@ -1657,13 +1694,24 @@ function ScanTrayModal({ materials, onApply, onClose }) {
 }
 
 /* ── Kvittering ── */
-function ReceiptModal({ trade, config, onClose }) {
+// pending=true (kun ved salg, der endnu ikke er bogført): "Færdig" bogfører hele
+// handlen (onConfirm), og et ✕ i toppen annullerer den helt uden spor (onCancel).
+// pending=false (køb, der allerede er bogført med det samme): kvitteringen er bare en
+// visning, og "Færdig" lukker den blot (onClose) — som hidtil.
+function ReceiptModal({ trade, config, pending, onConfirm, onCancel, onClose }) {
   const cur = config.currency;
   const d = new Date(trade.at);
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4" onClick={pending ? undefined : onClose}>
       <div className="bg-white rounded-2xl w-full max-w-sm overflow-hidden" onClick={(e) => e.stopPropagation()}>
-        <div className="px-5 py-4 text-center" style={{ background: INK, borderBottom: `3px solid ${GOLD}` }}>
+        <div className="relative px-5 py-4 text-center" style={{ background: INK, borderBottom: `3px solid ${GOLD}` }}>
+          {pending && (
+            <button onClick={onCancel} aria-label="Annullér handlen" title="Annullér handlen"
+              className="absolute top-3 right-3 w-7 h-7 rounded-full flex items-center justify-center"
+              style={{ color: GOLD, background: "rgba(245,179,1,.15)" }}>
+              <X size={15} />
+            </button>
+          )}
           <div className="text-[10px] uppercase tracking-widest font-bold" style={{ color: GOLD }}>Buy · Sell · Trade</div>
           <div className="text-xl font-black text-white">{config.shopName}</div>
           <div className="text-[11px] text-stone-400 mt-0.5">Kvittering · {d.toLocaleDateString("da-DK")} {d.toTimeString().slice(0, 5)}</div>
@@ -1698,21 +1746,21 @@ function ReceiptModal({ trade, config, onClose }) {
         </div>
         <div className="px-5 pb-4 flex gap-2">
           <div className="flex-1 text-[10px] text-stone-400 self-center">Screenshot og send til kunden.</div>
-          <button onClick={onClose} className="px-4 py-2.5 rounded-xl font-black text-white" style={{ background: INK }}>Færdig</button>
+          <button onClick={pending ? onConfirm : onClose} className="px-4 py-2.5 rounded-xl font-black text-white" style={{ background: INK }}>Færdig</button>
         </div>
       </div>
     </div>
   );
 }
 
-/* ── "Craftede du disse?" — vises efter et salg, hvis en eller flere solgte
-   varer matcher en crafting-opskrift. Trækker kun materialer fra lageret. ── */
-function CraftCheckModal({ matches, onConsume, onClose }) {
+/* ── "Craftede du disse?" — vises FØR kvitteringen, hvis en eller flere solgte varer
+   matcher en crafting-opskrift. Trækker INTET fra lageret her — gemmer blot brugerens
+   valg (onDecide), som først udføres samlet med resten af salget ved "Færdig" i
+   kvitteringen (se finalizeTrade/commitTrade i App). ── */
+function CraftCheckModal({ matches, onDecide }) {
   const [qtyMap, setQtyMap] = useState(() =>
     Object.fromEntries(matches.map((m) => [m.recipe.name, m.soldQty]))
   );
-  const [busy, setBusy] = useState(false);
-  const [results, setResults] = useState(null); // null = endnu ikke bekræftet
 
   const setQty = (name, v) => {
     // tomt felt (v === "") -> +v er NaN -> || 0 rammer, dvs. tomt felt tæller som 0
@@ -1720,28 +1768,12 @@ function CraftCheckModal({ matches, onConsume, onClose }) {
     setQtyMap((prev) => ({ ...prev, [name]: n }));
   };
 
-  // Kryds og "Spring over" gør PRÆCIS det samme: luk dialogen uden at kalde onConsume
-  // noget sted. Salget er allerede gemt og påvirkes ikke af dette.
-  const handleSkip = () => { onClose(); };
-
-  // Kaldes KUN af "Bekræft"-knappen. Trækker udelukkende materialer for de linjer,
-  // hvor det indtastede antal er > 0 — et tomt/0-felt springes over uden noget DB-kald.
-  const handleConfirm = async () => {
-    setBusy(true);
-    const res = {};
-    for (const m of matches) {
-      const qty = Math.max(0, Math.floor(+qtyMap[m.recipe.name]) || 0);
-      if (qty <= 0) { res[m.recipe.name] = { ok: true, skipped: true }; continue; }
-      try {
-        await onConsume(m.recipe, qty);
-        res[m.recipe.name] = { ok: true, text: `✓ Trak materialer til ${qty}× ${m.recipe.name}` };
-      } catch (e) {
-        res[m.recipe.name] = { ok: false, text: e.message || "Kunne ikke trække materialer fra." };
-      }
-    }
-    setResults(res);
-    setBusy(false);
-  };
+  // Kryds og "Spring over" gør PRÆCIS det samme: gå videre til kvitteringen uden at
+  // vælge nogen craft-materialer til at blive trukket ved "Færdig".
+  const handleSkip = () => onDecide({});
+  // Kaldes KUN af "Bekræft"-knappen: gemmer de indtastede antal (et tomt/0-felt
+  // tælles ikke med) og går videre til kvitteringen.
+  const handleConfirm = () => onDecide(qtyMap);
 
   return (
     // Bevidst INTET onClick her — klik på baggrunden/overlayet må ikke lukke dialogen.
@@ -1749,50 +1781,32 @@ function CraftCheckModal({ matches, onConsume, onClose }) {
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4">
       <div className="bg-white rounded-2xl w-full max-w-sm overflow-hidden">
         <div className="relative px-5 py-4" style={{ background: INK, borderBottom: `3px solid ${GOLD}` }}>
-          <button onClick={handleSkip} disabled={busy} aria-label="Luk" title="Luk"
-            className="absolute top-3 right-3 w-7 h-7 rounded-full flex items-center justify-center disabled:opacity-40"
+          <button onClick={handleSkip} aria-label="Luk" title="Luk"
+            className="absolute top-3 right-3 w-7 h-7 rounded-full flex items-center justify-center"
             style={{ color: GOLD, background: "rgba(245,179,1,.15)" }}>
             <X size={15} />
           </button>
           <div className="flex items-center gap-2 text-white font-black text-base pr-8"><Hammer size={17} color={GOLD} /> Craftede du disse?</div>
-          <div className="text-[11px] text-stone-400 mt-0.5 pr-8">Så trækker vi materialerne fra lageret. Sæt 0 for at springe en vare over.</div>
+          <div className="text-[11px] text-stone-400 mt-0.5 pr-8">Materialerne trækkes sammen med resten af salget, når du trykker "Færdig" i kvitteringen. Sæt 0 for at springe en vare over.</div>
         </div>
         <div className="px-5 py-4 space-y-3 max-h-[60vh] overflow-y-auto">
-          {matches.map((m) => {
-            const r = results && results[m.recipe.name];
-            return (
-              <div key={m.recipe.name} className="flex items-center justify-between gap-3 pb-3 border-b border-stone-100 last:border-0 last:pb-0">
-                <div className="min-w-0">
-                  <div className="font-bold text-sm text-stone-900 truncate">{m.recipe.name}</div>
-                  <div className="text-[11px] text-stone-500">Solgt: {m.soldQty} stk.</div>
-                  {r && (
-                    <div className="text-[11px] font-bold mt-0.5" style={{ color: r.skipped ? "#a8a29e" : r.ok ? GREEN : RED }}>
-                      {r.skipped ? "— sprunget over" : r.text}
-                    </div>
-                  )}
-                </div>
-                {!results && (
-                  <input type="number" inputMode="numeric" min={0} value={qtyMap[m.recipe.name] ?? 0}
-                    onChange={(e) => setQty(m.recipe.name, e.target.value)}
-                    className="w-16 text-center rounded-lg border border-stone-300 py-2 text-sm font-bold shrink-0" />
-                )}
+          {matches.map((m) => (
+            <div key={m.recipe.name} className="flex items-center justify-between gap-3 pb-3 border-b border-stone-100 last:border-0 last:pb-0">
+              <div className="min-w-0">
+                <div className="font-bold text-sm text-stone-900 truncate">{m.recipe.name}</div>
+                <div className="text-[11px] text-stone-500">Solgt: {m.soldQty} stk.</div>
               </div>
-            );
-          })}
+              <input type="number" inputMode="numeric" min={0} value={qtyMap[m.recipe.name] ?? 0}
+                onChange={(e) => setQty(m.recipe.name, e.target.value)}
+                className="w-16 text-center rounded-lg border border-stone-300 py-2 text-sm font-bold shrink-0" />
+            </div>
+          ))}
         </div>
         <div className="px-5 pb-4 flex gap-2">
-          {results ? (
-            <button onClick={onClose} className="flex-1 py-2.5 rounded-xl font-black text-white" style={{ background: INK }}>Luk</button>
-          ) : (
-            <>
-              <button onClick={handleSkip} disabled={busy}
-                className="flex-1 py-2.5 rounded-xl font-bold text-stone-600 border border-stone-300 disabled:opacity-50">Spring over</button>
-              <button onClick={handleConfirm} disabled={busy}
-                className="flex-1 py-2.5 rounded-xl font-black text-white disabled:opacity-50" style={{ background: GREEN }}>
-                {busy ? "Trækker…" : "Bekræft"}
-              </button>
-            </>
-          )}
+          <button onClick={handleSkip}
+            className="flex-1 py-2.5 rounded-xl font-bold text-stone-600 border border-stone-300">Spring over</button>
+          <button onClick={handleConfirm}
+            className="flex-1 py-2.5 rounded-xl font-black text-white" style={{ background: GREEN }}>Bekræft</button>
         </div>
       </div>
     </div>
