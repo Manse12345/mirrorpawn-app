@@ -327,6 +327,156 @@ function cropToBinaryCanvas(sourceCanvas, sx, sy, sw, sh, scale) {
   return out;
 }
 
+// ── Ciffer-skabelon-matching (badge-tal) ────────────────────────────────────────
+// Spillets antal-badge tegner altid cifrene i den samme faste font, så i stedet for
+// at "læse" tallet med Tesseract sammenlignes hvert enkelt ciffer direkte mod gemte
+// skabeloner for 0-9 — langt mere robust end OCR for lige netop disse tal. Tesseract
+// (to-pas gråtone + binariseret, se scanTrayImage) bruges KUN som fallback, hvis der
+// endnu ikke er kalibreret skabeloner, eller et ciffer ikke matcher nogen sikkert nok.
+const DIGIT_TEMPLATES_KEY = "digit-templates";     // localStorage-nøgle — gratis, ingen database
+const DIGIT_TPL_W = 20, DIGIT_TPL_H = 28;          // fast normaliseret størrelse pr. ciffer
+const DIGIT_MATCH_MIN_SCORE = 0.72;                // under denne lighed (0-1, SAD-baseret) stoles der ikke på matchet
+
+function loadDigitTemplates() {
+  try {
+    const raw = localStorage.getItem(DIGIT_TEMPLATES_KEY);
+    const obj = raw ? JSON.parse(raw) : {};
+    return obj && typeof obj === "object" ? obj : {};
+  } catch (e) { return {}; }
+}
+// Gemmer ÉN skabelon pr. cifer-værdi (0-9) — en ny kalibrering/rettelse overskriver
+// blot den forrige for det ciffer, som ønsket (intet gennemsnit, ingen historik).
+function saveDigitTemplate(digit, bitmap) {
+  try {
+    const all = loadDigitTemplates();
+    all[String(digit)] = Array.from(bitmap);
+    localStorage.setItem(DIGIT_TEMPLATES_KEY, JSON.stringify(all));
+  } catch (e) {}
+}
+
+// Beskærer badge-området, opskalerer og binariserer med FAST polaritet — badgets tal
+// er altid hvidt på en mørk cirkel i spillets faste design, så (modsat cropToBinaryCanvas
+// ovenfor) er der ingen grund til at gætte polaritet ud fra billedet. Returnerer et
+// 0/1-bitmap i det opskalerede koordinatsystem.
+function cropBadgeBitmap(sourceCanvas, sx, sy, sw, sh, scale) {
+  const w = Math.max(1, Math.round(sw * scale));
+  const h = Math.max(1, Math.round(sh * scale));
+  const out = document.createElement("canvas");
+  out.width = w; out.height = h;
+  const octx = out.getContext("2d");
+  octx.imageSmoothingEnabled = true;
+  octx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, w, h);
+  const { data } = octx.getImageData(0, 0, w, h);
+  const n = w * h;
+  const gray = new Uint8ClampedArray(n);
+  for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+    gray[p] = Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
+  }
+  const t = otsuThreshold(gray, n);
+  const bin = new Uint8Array(n);
+  for (let p = 0; p < n; p++) bin[p] = gray[p] >= t ? 1 : 0; // lyst = ciffer
+  return { bin, w, h };
+}
+
+// Finder enkelte cifre i badget via vertikal projektion: summér "tændte" pixels pr.
+// kolonne, og gruppér sammenhængende søjler med indhold til hver sit ciffer — det
+// splitter fx et 538-badge til tre separate bokse (5, 3, 8).
+function segmentDigitBoxes(bin, w, h) {
+  const colSum = new Int32Array(w);
+  for (let x = 0; x < w; x++) {
+    let s = 0;
+    for (let y = 0; y < h; y++) s += bin[y * w + x];
+    colSum[x] = s;
+  }
+  const minCol = Math.max(1, Math.round(h * 0.04)); // ignorér spredte enkelt-pixel støj i en søjle
+  const minWidth = Math.max(2, Math.round(w * 0.015));
+  const boxes = [];
+  let x = 0;
+  while (x < w) {
+    if (colSum[x] < minCol) { x++; continue; }
+    const x0 = x;
+    while (x < w && colSum[x] >= minCol) x++;
+    const x1 = x - 1;
+    if (x1 - x0 + 1 < minWidth) continue; // for smalt til at være et rigtigt ciffer — støj
+    let y0 = h, y1 = -1;
+    for (let yy = 0; yy < h; yy++) {
+      for (let xx = x0; xx <= x1; xx++) {
+        if (bin[yy * w + xx]) { if (yy < y0) y0 = yy; if (yy > y1) y1 = yy; break; }
+      }
+    }
+    if (y1 >= y0) boxes.push({ x0, x1, y0, y1 });
+  }
+  return boxes;
+}
+
+// Klipper ét ciffer-område ud og normaliserer det til den faste skabelon-størrelse
+// (DIGIT_TPL_W × DIGIT_TPL_H), så alle cifre — uanset badgets egen opløsning — kan
+// sammenlignes direkte med de gemte skabeloner.
+function normalizeDigitBox(bin, w, h, box) {
+  const bw = box.x1 - box.x0 + 1, bh = box.y1 - box.y0 + 1;
+  const src = document.createElement("canvas");
+  src.width = bw; src.height = bh;
+  const sctx = src.getContext("2d");
+  const imgData = sctx.createImageData(bw, bh);
+  for (let yy = 0; yy < bh; yy++) {
+    for (let xx = 0; xx < bw; xx++) {
+      const v = bin[(box.y0 + yy) * w + (box.x0 + xx)] ? 255 : 0;
+      const di = (yy * bw + xx) * 4;
+      imgData.data[di] = imgData.data[di + 1] = imgData.data[di + 2] = v;
+      imgData.data[di + 3] = 255;
+    }
+  }
+  sctx.putImageData(imgData, 0, 0);
+
+  const dst = document.createElement("canvas");
+  dst.width = DIGIT_TPL_W; dst.height = DIGIT_TPL_H;
+  const dctx = dst.getContext("2d");
+  dctx.imageSmoothingEnabled = true;
+  dctx.drawImage(src, 0, 0, bw, bh, 0, 0, DIGIT_TPL_W, DIGIT_TPL_H);
+  const { data } = dctx.getImageData(0, 0, DIGIT_TPL_W, DIGIT_TPL_H);
+  const out = new Uint8Array(DIGIT_TPL_W * DIGIT_TPL_H);
+  for (let i = 0, p = 0; i < data.length; i += 4, p++) out[p] = data[i] >= 128 ? 1 : 0;
+  return out;
+}
+
+// Beskærer badge-området og returnerer ét normaliseret 0/1-bitmap pr. fundet ciffer,
+// i læserækkefølge (venstre mod højre) — bruges BÅDE til live skabelon-matching og til
+// at lære nye skabeloner fra en bekræftet/rettet linje (se learnDigitTemplatesFromRow).
+function extractQtyDigitBitmaps(sourceCanvas, sx, sy, sw, sh, scale) {
+  const { bin, w, h } = cropBadgeBitmap(sourceCanvas, sx, sy, sw, sh, scale);
+  return segmentDigitBoxes(bin, w, h).map((box) => normalizeDigitBox(bin, w, h, box));
+}
+
+// Normaliseret lighed (1 = identiske, 0 = modsatte) mellem to lige store 0/1-bitmaps —
+// simpel SAD (sum af absolutte forskelle), normaliseret til antal pixels.
+function bitmapSimilarity(a, b) {
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) diff++;
+  return 1 - diff / a.length;
+}
+// Bedste skabelon-match for ét ciffer-bitmap. digit=null hvis der slet ingen skabeloner er.
+function bestTemplateMatch(bitmap, templates) {
+  let bestDigit = null, bestScore = -1;
+  for (const d in templates) {
+    const score = bitmapSimilarity(bitmap, templates[d]);
+    if (score > bestScore) { bestScore = score; bestDigit = d; }
+  }
+  return { digit: bestDigit, score: bestScore };
+}
+
+// Lærer skabeloner fra ÉN linjes bekræftede/rettede antal (kaldes enten når brugeren
+// selv retter et antal i det normale flow, eller fra "Gem som skabeloner" i kalibrerings-
+// tilstand). Gemmer KUN hvis antallet af segmenterede cifre matcher antallet af cifre i
+// det bekræftede tal — ellers er der ingen pålidelig 1:1-sammenhæng mellem bitmaps og
+// cifre (fx hvis badge-udsnittet blev fejlsegmenteret), og så springes linjen over.
+// Returnerer antal skabeloner der blev gemt (0 hvis linjen blev sprunget over).
+function learnDigitTemplatesFromRow(row) {
+  const digitsStr = String(Math.max(1, Math.floor(+row.qty) || 1));
+  if (!row.digitBitmaps || row.digitBitmaps.length !== digitsStr.length) return 0;
+  digitsStr.split("").forEach((ch, i) => saveDigitTemplate(ch, row.digitBitmaps[i]));
+  return digitsStr.length;
+}
+
 const NAME_WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆØÅæøå0123456789 ./-";
 const QTY_WHITELIST = "0123456789";
 
@@ -368,6 +518,7 @@ async function scanTrayImage(imgSrc, worker, materials, onProgress) {
   }
   if (cells.length === 0) return { items: [], fieldsCount: 0 };
 
+  const digitTemplates = loadDigitTemplates(); // læses én gang pr. scan, ikke pr. felt
   const results = [];
   for (let i = 0; i < cells.length; i++) {
     const cell = cells[i];
@@ -387,32 +538,46 @@ async function scanTrayImage(imgSrc, worker, materials, onProgress) {
     const hasLetter = /[A-Za-zÆØÅæøå]/.test(name);
     if (!hasLetter) continue;
 
-    // ANTAL: øverste venstre hjørne (venstre ~35%, øverste ~30%). Øverste højre hjørne (vægt) ignoreres helt.
-    // Læses to gange — én gang bare gråtone (opskaleret), én gang binariseret (sort/hvid,
-    // baggrund/støj fjernet) — for at undgå forvekslede cifre som 6/8, 5/6, 3/8. PSM sættes
-    // til "enkelt tekstlinje" (7), så Tesseract ved det kun skal finde ét lille tal, ikke tekst.
+    // ANTAL: øverste venstre hjørne (venstre ~35%, øverste ~30%). Øverste højre hjørne (vægt)
+    // ignoreres helt. Badgets cifre er tegnet i en fast font af spillet, så de segmenteres
+    // først til enkelt-ciffer-bitmaps og sammenlignes mod gemte skabeloner (se
+    // extractQtyDigitBitmaps/bestTemplateMatch ovenfor) — langt mere robust end OCR, når der
+    // er kalibreret skabeloner for de involverede cifre. Kun hvis det IKKE lykkes for ALLE
+    // cifre i badget (ingen skabeloner endnu, eller for lav lighed) falder vi tilbage til den
+    // uændrede to-pas Tesseract-læsning, og markerer linjen som usikker.
     const qtyW = cell.w * QTY_WIDTH_RATIO;
     const qtyH = cell.h * QTY_HEIGHT_RATIO;
-    await worker.setParameters({ tessedit_char_whitelist: QTY_WHITELIST, tessedit_pageseg_mode: "7" });
+    const digitBitmaps = extractQtyDigitBitmaps(canvas, cell.x, cell.y, qtyW, qtyH, QTY_UPSCALE);
 
-    const qtyCanvasGray = cropToGrayCanvas(canvas, cell.x, cell.y, qtyW, qtyH, QTY_UPSCALE);
-    const { data: qtyDataGray } = await worker.recognize(qtyCanvasGray);
-    const digitsGray = (qtyDataGray.text || "").replace(/[^0-9]/g, "");
+    let digits = "", qtyUncertain = true;
+    if (digitBitmaps.length > 0) {
+      let ok = true, out = "";
+      for (const bmp of digitBitmaps) {
+        const { digit, score } = bestTemplateMatch(bmp, digitTemplates);
+        if (!digit || score < DIGIT_MATCH_MIN_SCORE) { ok = false; break; }
+        out += digit;
+      }
+      if (ok) { digits = out; qtyUncertain = false; }
+    }
 
-    const qtyCanvasBin = cropToBinaryCanvas(canvas, cell.x, cell.y, qtyW, qtyH, QTY_UPSCALE);
-    const { data: qtyDataBin } = await worker.recognize(qtyCanvasBin);
-    const digitsBin = (qtyDataBin.text || "").replace(/[^0-9]/g, "");
+    if (!digits) {
+      // Tesseract-fallback — uændret to-pas metode (gråtone + binariseret, PSM 7).
+      await worker.setParameters({ tessedit_char_whitelist: QTY_WHITELIST, tessedit_pageseg_mode: "7" });
+      const qtyCanvasGray = cropToGrayCanvas(canvas, cell.x, cell.y, qtyW, qtyH, QTY_UPSCALE);
+      const { data: qtyDataGray } = await worker.recognize(qtyCanvasGray);
+      const digitsGray = (qtyDataGray.text || "").replace(/[^0-9]/g, "");
 
-    // Enige læsninger vindes stoles på; ellers foretrækkes den binariserede (typisk mest
-    // robust mod støj/baggrund), og falder den tom, bruges gråtone-læsningen i stedet. Er
-    // de to læsninger UENIGE (begge fandt cifre, men forskellige), markeres linjen som
-    // usikker, så brugeren ved den bør tjekkes ekstra — se qtyUncertain i ScanTrayModal.
-    const digits = digitsBin || digitsGray;
-    const qtyUncertain = !!(digitsGray && digitsBin && digitsGray !== digitsBin);
+      const qtyCanvasBin = cropToBinaryCanvas(canvas, cell.x, cell.y, qtyW, qtyH, QTY_UPSCALE);
+      const { data: qtyDataBin } = await worker.recognize(qtyCanvasBin);
+      const digitsBin = (qtyDataBin.text || "").replace(/[^0-9]/g, "");
+
+      digits = digitsBin || digitsGray;
+      qtyUncertain = true; // skabelon-match lykkedes ikke -> altid markeret usikker
+    }
     let qty = 1;
     if (digits) qty = Math.max(1, parseInt(digits, 10));
 
-    results.push({ raw: qty > 1 ? `${name} (${qty})` : name, name, qty, qtyUncertain });
+    results.push({ raw: qty > 1 ? `${name} (${qty})` : name, name, qty, qtyUncertain, digitBitmaps });
   }
   onProgress(100);
   return { items: results, fieldsCount: cells.length };
@@ -508,6 +673,7 @@ export default function App() {
   };
   const [tradeMode, setTradeMode] = useState("buy"); // buy | sell
   const [showScan, setShowScan] = useState(false);
+  const [scanCalibrate, setScanCalibrate] = useState(false); // true = ScanTrayModal åbnes i "Kalibrér cifre"-tilstand
   // "Skranke-vare": unikke værdigenstande (smykker, malerier, ure, ringe) købt af kunden
   // og videresolgt til spillets skranke for 100% af grundværdien. Håndteres separat fra
   // cart/materials — indgår kun i den aktuelle handel, ikke i det faste lager.
@@ -1017,10 +1183,18 @@ export default function App() {
             </button>
           </div>
           {tradeMode === "buy" && (
-            <button onClick={() => setShowScan(true)}
+            <button onClick={() => { setScanCalibrate(false); setShowScan(true); }}
               className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg font-bold text-sm border-2 border-dashed"
               style={wide ? { borderColor: GOLD, color: GOLD, background: "rgba(245,179,1,.08)" } : { borderColor: GOLD_D, color: GOLD_D, background: "#fdf3e7" }}>
               <Camera size={16} /> Scan bakke (læs varer fra screenshot)
+            </button>
+          )}
+          {tradeMode === "buy" && canManageStore && (
+            <button onClick={() => { setScanCalibrate(true); setShowScan(true); }}
+              className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg font-semibold text-xs border border-dashed"
+              style={wide ? { borderColor: "#3a3a3a", color: "#9ca3af" } : { borderColor: "#d6d3d1", color: "#78716c" }}
+              title="Ret antal-tal 100% korrekt på en scannet bakke og gem dem som skabeloner, så Scan bakke læser tal mere præcist fremover">
+              <Camera size={13} /> Kalibrér cifre (forbedr tal-læsning)
             </button>
           )}
           <div className="relative">
@@ -1268,7 +1442,10 @@ export default function App() {
       ) : craftCheck ? (
         <CraftCheckModal matches={craftCheck.matches} onDecide={handleCraftDecision} />
       ) : null}
-      {showScan && <ScanTrayModal materials={materials} onApply={applyScannedItems} onClose={() => setShowScan(false)} />}
+      {showScan && (
+        <ScanTrayModal materials={materials} calibrationMode={scanCalibrate} onApply={applyScannedItems}
+          onClose={() => { setShowScan(false); setScanCalibrate(false); }} />
+      )}
 
       {/* Total-bjælke (kun telefon) */}
       {!showSettings && !wide && (
@@ -2072,7 +2249,7 @@ function FullScreenMsg({ text }) {
 }
 
 /* ── Scan bakke (OCR via Tesseract.js — kører lokalt i browseren) ── */
-function ScanTrayModal({ materials, onApply, onClose }) {
+function ScanTrayModal({ materials, onApply, onClose, calibrationMode }) {
   const [imgSrc, setImgSrc] = useState(null);
   const [imgFile, setImgFile] = useState(null);
   const [scanning, setScanning] = useState(false);
@@ -2080,6 +2257,7 @@ function ScanTrayModal({ materials, onApply, onClose }) {
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState("");
   const [fieldsCount, setFieldsCount] = useState(0); // antal felter OCR'en vurderede var udfyldte — bruges til uoverensstemmelses-tjekket nedenfor
+  const [calibMsg, setCalibMsg] = useState(""); // status efter "Gem som skabeloner" i kalibreringstilstand
   const fileInputRef = useRef(null);
 
   const loadImage = (fileOrBlob) => {
@@ -2087,6 +2265,7 @@ function ScanTrayModal({ materials, onApply, onClose }) {
     setImgFile(fileOrBlob);
     setRows(null);
     setErr("");
+    setCalibMsg("");
     const reader = new FileReader();
     reader.onload = (e) => setImgSrc(e.target.result);
     reader.readAsDataURL(fileOrBlob);
@@ -2110,9 +2289,13 @@ function ScanTrayModal({ materials, onApply, onClose }) {
       const parsed = await scanTrayImage(imgSrc, worker, materials, setProgress);
       if (parsed.items.length === 0) { setErr("Fandt ingen udfyldte felter eller læselige varenavne i billedet. Prøv et tydeligere/nærmere screenshot af bakken."); setScanning(false); await worker.terminate(); return; }
       setFieldsCount(parsed.fieldsCount);
+      setCalibMsg("");
       setRows(parsed.items.map((p) => {
         const match = bestMaterialMatch(p.name, materials);
-        return { raw: p.raw, materialId: match ? match.material.id : "", qty: p.qty, qtyUncertain: !!p.qtyUncertain, checked: true };
+        return {
+          raw: p.raw, materialId: match ? match.material.id : "", qty: p.qty, originalQty: p.qty,
+          qtyUncertain: !!p.qtyUncertain, digitBitmaps: p.digitBitmaps || [], checked: true,
+        };
       }));
     } catch (e) {
       setErr("OCR fejlede: " + (e?.message || String(e)));
@@ -2123,6 +2306,32 @@ function ScanTrayModal({ materials, onApply, onClose }) {
 
   const updateRow = (i, patch) => setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
   const matchedCount = rows ? rows.filter((r) => r.materialId).length : 0;
+
+  // Almindeligt flow: lær KUN af en linje, hvis brugeren rent faktisk har ÆNDRET antallet
+  // (dvs. rettet en fejllæsning) — aldrig af tal der bare accepteres uden ændring, da de kan
+  // være forkerte. Bruges onBlur (ikke onChange), så vi lærer af det FÆRDIGE tal brugeren har
+  // tastet, ikke af hvert enkelt mellemliggende ciffer undervejs. Kalibreringstilstand har sin
+  // egen eksplicitte "Gem som skabeloner"-handling nedenfor i stedet.
+  const onQtyBlur = (row) => {
+    if (calibrationMode) return;
+    if (row.qty === row.originalQty) return;
+    learnDigitTemplatesFromRow(row);
+  };
+
+  // Kalibreringstilstand: brugeren har rettet ALLE linjer til at være 100% korrekte og
+  // trykker "Gem som skabeloner" — her bruges hver linjes AKTUELLE (bekræftede) antal som
+  // facit, uanset om den enkelte linje blev ændret eller ej.
+  const saveAllAsTemplates = () => {
+    let digitsSaved = 0, linesUsed = 0;
+    (rows || []).forEach((r) => {
+      const n = learnDigitTemplatesFromRow(r);
+      if (n > 0) { digitsSaved += n; linesUsed++; }
+    });
+    const covered = Object.keys(loadDigitTemplates()).sort().join(" ");
+    setCalibMsg(digitsSaved > 0
+      ? `Gemte ${digitsSaved} ciffer-skabelon${digitsSaved === 1 ? "" : "er"} fra ${linesUsed} linje${linesUsed === 1 ? "" : "r"}. Skabeloner dækker nu: ${covered || "ingen"}.`
+      : "Kunne ikke udlede skabeloner fra nogen af linjerne — badgets cifre blev nok ikke splittet korrekt. Prøv et tydeligere screenshot.");
+  };
 
   const apply = () => {
     const toAdd = (rows || []).filter((r) => r.checked && r.materialId && r.qty > 0);
@@ -2135,7 +2344,9 @@ function ScanTrayModal({ materials, onApply, onClose }) {
       <div className="bg-white rounded-2xl w-full max-w-lg overflow-hidden flex flex-col" style={{ maxHeight: "92vh" }}
         onClick={(e) => e.stopPropagation()} onPaste={onPasteImg}>
         <div className="px-5 py-4 flex items-center justify-between shrink-0" style={{ background: INK, borderBottom: `3px solid ${GOLD}` }}>
-          <div className="text-white font-black flex items-center gap-2"><Camera size={18} style={{ color: GOLD }} /> Scan bakke</div>
+          <div className="text-white font-black flex items-center gap-2">
+            <Camera size={18} style={{ color: GOLD }} /> {calibrationMode ? "Kalibrér cifre" : "Scan bakke"}
+          </div>
           <button onClick={onClose} className="text-stone-400"><X size={20} /></button>
         </div>
         <div className="p-5 space-y-3 text-stone-900 overflow-y-auto">
@@ -2164,7 +2375,9 @@ function ScanTrayModal({ materials, onApply, onClose }) {
           {rows && (
             <div className="space-y-3">
               <div className="text-xs text-stone-500">
-                Fandt {rows.length} linje{rows.length === 1 ? "" : "r"} — {matchedCount} matchede automatisk. Tjek og ret gerne før du lægger dem i kurven.
+                {calibrationMode
+                  ? `Fandt ${rows.length} linje${rows.length === 1 ? "" : "r"}. Ret hvert antal til det er 100% korrekt, og tryk "Gem som skabeloner" nedenfor.`
+                  : `Fandt ${rows.length} linje${rows.length === 1 ? "" : "r"} — ${matchedCount} matchede automatisk. Tjek og ret gerne før du lægger dem i kurven.`}
               </div>
               {fieldsCount > rows.length && (
                 <div className="text-xs font-bold" style={{ color: RED }}>
@@ -2196,6 +2409,7 @@ function ScanTrayModal({ materials, onApply, onClose }) {
                         </select>
                         <input type="number" inputMode="numeric" value={r.qty}
                           onChange={(e) => updateRow(i, { qty: Math.max(1, +e.target.value || 1) })}
+                          onBlur={() => onQtyBlur(r)}
                           className="w-16 rounded-lg border px-2 py-1.5 text-sm font-bold text-center"
                           style={{ borderColor: uncertainQty ? GOLD_D : "#d6d3d1", borderWidth: uncertainQty ? 2 : 1 }} />
                       </div>
@@ -2206,11 +2420,20 @@ function ScanTrayModal({ materials, onApply, onClose }) {
                   );
                 })}
               </div>
+              {calibrationMode && calibMsg && (
+                <div className="text-xs font-bold" style={{ color: GREEN }}>{calibMsg}</div>
+              )}
               <div className="flex gap-2 pt-1">
-                <button onClick={apply} className="flex-1 py-2.5 rounded-xl font-black text-sm" style={{ background: GREEN, color: "white" }}>
-                  <Check size={16} className="inline mr-1" /> Læg i kurv
-                </button>
-                <button onClick={() => { setImgSrc(null); setImgFile(null); setRows(null); setErr(""); }}
+                {calibrationMode ? (
+                  <button onClick={saveAllAsTemplates} className="flex-1 py-2.5 rounded-xl font-black text-sm" style={{ background: GOLD, color: INK }}>
+                    <Check size={16} className="inline mr-1" /> Gem som skabeloner
+                  </button>
+                ) : (
+                  <button onClick={apply} className="flex-1 py-2.5 rounded-xl font-black text-sm" style={{ background: GREEN, color: "white" }}>
+                    <Check size={16} className="inline mr-1" /> Læg i kurv
+                  </button>
+                )}
+                <button onClick={() => { setImgSrc(null); setImgFile(null); setRows(null); setErr(""); setCalibMsg(""); }}
                   className="px-4 py-2.5 rounded-xl font-bold text-sm border border-stone-300 text-stone-600">Scan nyt billede</button>
               </div>
             </div>
