@@ -148,16 +148,6 @@ function containsWholeWord(haystack, needle) {
   }
   return false;
 }
-// Manuelle OCR→vare-rettelser: bruges når reglerne nedenfor (dansk bogstav-fold,
-// forkortede navne) ikke selv fanger en specifik OCR-fejl. Nøglen er OCR-teksten
-// normaliseret som normalizeOcr() ville skrive den (stort, tegn fjernet, ét mellemrum
-// mellem ord, trimmet), værdien er det rigtige varenavn. Udvid frit efter behov.
-const OCR_NAME_OVERRIDES = {
-  "TRE": "Træ",
-  "FLYDENDE GEDNI": "Flydende Gødning",
-  "STAL": "Stål",
-  "STÅL": "Stål",
-};
 // OCR forveksler ofte danske specialtegn med deres "udskrevne" form (fx TRÆ læses som
 // TRE eller TRAE, STÅL som STAL). Behandler æ/ae, ø/oe og å/aa som ens — begge veje —
 // så matchet er robust uden at skulle liste hver enkelt variant.
@@ -180,13 +170,6 @@ function foldDanishCharsOcrE(s) {
 function bestMaterialMatch(rawName, materials) {
   const targetRaw = normalizeOcr(rawName);
   if (!targetRaw) return null;
-
-  // 1) Manuel rettelse (se OCR_NAME_OVERRIDES) — slår direkte op på varenavn.
-  const override = OCR_NAME_OVERRIDES[targetRaw];
-  if (override) {
-    const hit = findMaterialByName(materials, override);
-    if (hit) return { material: hit, score: 1 };
-  }
 
   const target = foldDanishChars(targetRaw);
   const targetNoSpace = target.replace(/\s+/g, "");
@@ -253,6 +236,28 @@ function isNameStripEmpty(ctx, x, y, w, h) {
   }
   if (n === 0) return true;
   return (bright / n) < NAME_BRIGHT_RATIO_MIN;
+}
+
+const QTY_BADGE_CONTRAST_MIN = 40; // min-max luminansspredning i hjørnet, der tæller som "der er et badge her"
+
+// Er der et tal-badge i feltets hjørne? Badget er ALTID en mørk cirkel med et lyst tal
+// (fast i spillets design), så det giver stærk intern lyshedskontrast — modsat en tom,
+// stort set ensfarvet baggrund. Dette er en BEVIDST grov/lempelig test (kun min/max-
+// spredning), UAFHÆNGIG af den præcise cifer-segmentering, som selve tal-læsningen bruger
+// (extractQtyDigitBitmaps) — den er tunet til at isolere ENKELTE cifre præcist til
+// skabelon-matching, og er derfor for skrap til blot at afgøre "er der overhovedet noget
+// her": et tyndt/kort ciffer (fx et enkelt "4") kunne fejlagtigt segmentere til nul
+// bokse, selvom badget tydeligvis findes. Den grove kontrast-test fejler ikke sådan.
+function hasQtyBadge(ctx, x, y, w, h) {
+  const iw = Math.max(1, Math.round(w)), ih = Math.max(1, Math.round(h));
+  const { data } = ctx.getImageData(Math.round(x), Math.round(y), iw, ih);
+  let min = 255, max = 0;
+  for (let i = 0; i < data.length; i += 4) {
+    const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    if (lum < min) min = lum;
+    if (lum > max) max = lum;
+  }
+  return (max - min) >= QTY_BADGE_CONTRAST_MIN;
 }
 
 // Beskærer et område af kilde-canvas'et til et nyt, opskaleret og gråtonet canvas (bedre OCR-præcision)
@@ -503,7 +508,14 @@ async function scanTrayImage(imgSrc, worker, materials, onProgress) {
   const rows = Math.max(1, Math.ceil(canvas.height / cellH));
   if (canvas.width < cellW || canvas.height < cellH * 0.4) throw new Error("Billedet er for lille/forkert formet til at finde bakke-felter.");
 
+  // Grundprincip: et felt er kun TOMT hvis der hverken er navnetekst ELLER et tal-badge.
+  // Et fundet tal-badge betyder ALTID at feltet er ægte (tal-læsningen er pålidelig, se
+  // hasQtyBadge ovenfor) — navnets læsbarhed/længde har INGEN indflydelse på om feltet
+  // beholdes. allBadgePositions holder styr på ALLE gitter-positioner med et badge,
+  // uanset om de ender i cells, så sikkerhedstjekket til sidst kan opdage (og navngive)
+  // ethvert felt der alligevel skulle blive droppet ved en fremtidig fejl.
   const cells = [];
+  const allBadgePositions = [];
   for (let r = 0; r < rows; r++) {
     const y = r * cellH;
     const rowH = Math.min(cellH, canvas.height - y); // sidste række kan være delvist afskåret
@@ -512,8 +524,12 @@ async function scanTrayImage(imgSrc, worker, materials, onProgress) {
       const x = c * cellW;
       const nameH = rowH * NAME_STRIP_HEIGHT_RATIO;
       const nameY = y + rowH - nameH;
-      if (isNameStripEmpty(ctx, x, nameY, cellW, nameH)) continue; // tomt felt -> spring helt over, ingen OCR
-      cells.push({ x, y, w: cellW, h: rowH, nameY, nameH });
+      const qtyW = cellW * QTY_WIDTH_RATIO, qtyH = rowH * QTY_HEIGHT_RATIO;
+      const hasBadge = hasQtyBadge(ctx, x, y, qtyW, qtyH);
+      if (hasBadge) allBadgePositions.push(`række ${r + 1}, kolonne ${c + 1}`);
+      const hasNameText = !isNameStripEmpty(ctx, x, nameY, cellW, nameH);
+      if (!hasBadge && !hasNameText) continue; // REELT tomt felt -> spring over
+      cells.push({ x, y, w: cellW, h: rowH, nameY, nameH, r, c });
     }
   }
   if (cells.length === 0) return { items: [], fieldsCount: 0 };
@@ -529,14 +545,12 @@ async function scanTrayImage(imgSrc, worker, materials, onProgress) {
 
     await worker.setParameters({ tessedit_char_whitelist: NAME_WHITELIST, tessedit_pageseg_mode: "3" });
     const { data: nameData } = await worker.recognize(nameCanvas);
-    const name = (nameData.text || "").replace(/\s+/g, " ").trim();
-    // Backstop: kassér KUN et resultat uden en eneste bogstav (ren støj som "4" eller
-    // punktummer). Feltet er allerede tjekket for at være ikke-tomt via isNameStripEmpty
-    // (lys bundstribe = rigtig tekst dernede), SÅ vi stoler på det og beholder linjen,
-    // uanset hvor kort/ulæseligt OCR-navnet blev — ellers ryger korte, men gyldige,
-    // varenavne som "SKO" eller "STÅL" ud, fordi OCR kun fik fat i et par bogstaver.
-    const hasLetter = /[A-Za-zÆØÅæøå]/.test(name);
-    if (!hasLetter) continue;
+    const rawName = (nameData.text || "").replace(/\s+/g, " ").trim();
+    // Et navn UDEN et eneste bogstav (ren OCR-støj, tomt eller ukendt resultat) bliver
+    // ALDRIG en grund til at kassere linjen — feltet er allerede bekræftet ikke-tomt
+    // ovenfor. Navnet sættes blot til "", så brugeren kan vælge varen selv i dropdownen.
+    const hasLetter = /[A-Za-zÆØÅæøå]/.test(rawName);
+    const name = hasLetter ? rawName : "";
 
     // ANTAL: øverste venstre hjørne (venstre ~35%, øverste ~30%). Øverste højre hjørne (vægt)
     // ignoreres helt. Badgets cifre er tegnet i en fast font af spillet, så de segmenteres
@@ -577,9 +591,22 @@ async function scanTrayImage(imgSrc, worker, materials, onProgress) {
     let qty = 1;
     if (digits) qty = Math.max(1, parseInt(digits, 10));
 
-    results.push({ raw: qty > 1 ? `${name} (${qty})` : name, name, qty, qtyUncertain, digitBitmaps });
+    // Linjen droppes ALDRIG her — feltet er allerede afgjort ikke-tomt ovenfor. Uanset
+    // hvor usikker/mislykket navne- eller tal-læsningen blev, kommer den med som en linje.
+    const raw = name ? (qty > 1 ? `${name} (${qty})` : name) : `(ukendt vare, ${qty} stk.)`;
+    results.push({ raw, name, qty, qtyUncertain, digitBitmaps, r: cell.r, c: cell.c });
   }
   onProgress(100);
+
+  // Sikkerhedstjek: ethvert gitter-felt med et tal-badge SKAL være endt som en linje —
+  // det er selve grundprincippet ovenfor. Hvis et sådant felt alligevel mangler (fx pga.
+  // en fremtidig fejl i koden), logges det HER med præcis række/kolonne, så det opdages
+  // tidligt i stedet for bare at forsvinde stille fra scanningen.
+  const includedPositions = new Set(results.map((r) => `række ${r.r + 1}, kolonne ${r.c + 1}`));
+  const droppedBadgeFields = allBadgePositions.filter((p) => !includedPositions.has(p));
+  if (droppedBadgeFields.length > 0) {
+    console.warn(`[Scan bakke] ${droppedBadgeFields.length} felt(er) med et tal-badge blev IKKE medtaget i resultatet: ${droppedBadgeFields.join("; ")}. Tjek scanTrayImage.`);
+  }
   return { items: results, fieldsCount: cells.length };
 }
 
