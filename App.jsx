@@ -408,6 +408,24 @@ export default function App() {
   const loadLeaderboardFn = async () => { try { setLbSettings(await loadLeaderboardSettings()); } catch (e) {} };
   const [customerPhones, setCustomerPhones] = useState({}); // cust_id -> phone
   const loadCustomerPhonesFn = async () => { try { setCustomerPhones(await loadCustomerPhones()); } catch (e) {} };
+  // Telefon-felt ved KUNDE-ID i Kassen. Slår gemt nummer op, når kunde-id'et ÆNDRES
+  // (ikke når customerPhones i baggrunden genindlæses — ellers ville et pending baggrunds-
+  // poll kunne overskrive noget, kassøren lige er i gang med at rette).
+  const [custPhone, setCustPhone] = useState("");
+  useEffect(() => {
+    const idT = custId.trim();
+    setCustPhone(idT ? (customerPhones[idT] || "") : "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [custId]);
+  const saveCustPhoneNow = async () => {
+    const idT = custId.trim();
+    const phoneT = custPhone.trim();
+    if (!idT || !phoneT) return;
+    try {
+      await saveCustomerPhone(idT, phoneT);
+      setCustomerPhones((prev) => ({ ...prev, [idT]: phoneT }));
+    } catch (e) {}
+  };
   const [tradeMode, setTradeMode] = useState("buy"); // buy | sell
   const [showScan, setShowScan] = useState(false);
   // "Skranke-vare": unikke værdigenstande (smykker, malerier, ure, ringe) købt af kunden
@@ -717,6 +735,7 @@ export default function App() {
   // du disse?" (hvis relevant) og bekræftelse i kvitteringen (finalizeTrade/cancelTrade).
   const beginSaveTrade = () => {
     if (lines.length === 0) return;
+    saveCustPhoneNow();
     const pts = tradeMode === "buy" ? Math.floor(total / (config.pointsPer || 1000)) : 0;
     const trade = {
       id: "t" + Date.now(), at: Date.now(),
@@ -1065,6 +1084,11 @@ export default function App() {
                     <input value={custId} onChange={(e) => setCustId(e.target.value)} placeholder="valgfrit"
                       className="w-full mt-1 rounded-lg border px-3 py-2 text-sm font-bold"
                       style={{ borderColor: "#444", background: "#111", color: "white" }} />
+                    <label className="text-[10px] uppercase tracking-widest font-bold mt-2 block" style={{ color: "#9ca3af" }}>Telefon — valgfri</label>
+                    <input value={custPhone} onChange={(e) => setCustPhone(e.target.value)} onBlur={saveCustPhoneNow}
+                      placeholder="fx 555-0100"
+                      className="w-full mt-1 rounded-lg border px-3 py-2 text-sm font-bold"
+                      style={{ borderColor: "#444", background: "#111", color: "white" }} />
                     {tradeMode === "buy" && custId.trim() && lines.length > 0 && (
                       <div className="text-[11px] mt-1" style={{ color: GOLD }}>
                         + {Math.floor(total / (config.pointsPer || 1000))} point til {custId.trim()}
@@ -1088,13 +1112,6 @@ export default function App() {
                               <X size={13} />
                             </button>
                           </div>
-                          <label className="block">
-                            <div className="text-[10px] font-bold mb-1" style={{ color: "#9ca3af" }}>Note (valgfri)</div>
-                            <input value={counterForm.note} placeholder="Note (fx smykke, maleri) — valgfri"
-                              onChange={(e) => setCounterForm((f) => ({ ...f, note: e.target.value }))}
-                              className="w-full rounded-lg border px-2 py-1.5 text-sm font-bold"
-                              style={{ borderColor: "#444", background: PANEL, color: "white" }} />
-                          </label>
                           <div className="flex items-center gap-2">
                             <label className="flex-1 min-w-0 block">
                               <div className="text-[10px] font-bold mb-1" style={{ color: "#9ca3af" }}>Grundværdi (100%)</div>
