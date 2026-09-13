@@ -228,6 +228,7 @@ const NAME_STRIP_HEIGHT_RATIO = 0.28;  // nederste ~28% af feltet = varenavn
 const QTY_WIDTH_RATIO = 0.35;          // øverste venstre hjørne: ~35% bredde
 const QTY_HEIGHT_RATIO = 0.30;         // ~30% højde
 const CROP_UPSCALE = 3;                // opskalering af beskårne områder før OCR
+const QTY_UPSCALE = 5;                 // antal-tallet er meget lille i originalen, så det får sin egen, større opskalering
 
 function loadImageEl(src) {
   return new Promise((resolve, reject) => {
@@ -272,6 +273,60 @@ function cropToGrayCanvas(sourceCanvas, sx, sy, sw, sh, scale) {
   return out;
 }
 
+// Beregner en Otsu-tærskel (automatisk sort/hvid-skel) for en gråtone-pixelliste —
+// bruges til at binarisere antal-tallet, så cifrene bliver skarpe og entydige for OCR.
+function otsuThreshold(gray, n) {
+  const hist = new Array(256).fill(0);
+  for (let i = 0; i < n; i++) hist[gray[i]]++;
+  let sum = 0;
+  for (let t = 0; t < 256; t++) sum += t * hist[t];
+  let sumB = 0, wB = 0, best = 127, bestVar = -1;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (wB === 0) continue;
+    const wF = n - wB;
+    if (wF === 0) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB, mF = (sum - sumB) / wF;
+    const v = wB * wF * (mB - mF) * (mB - mF);
+    if (v > bestVar) { bestVar = v; best = t; }
+  }
+  return best;
+}
+
+// Beskærer, opskalerer og binariserer (rent sort/hvid) et område — bruges KUN til
+// antal-tallet, hvor skarpe, rene cifre betyder mere for OCR-præcisionen end for
+// varenavnet (som ikke røres af denne ændring). Cifrene ender altid som hvidt på sort,
+// uanset om de i originalen er lyse på mørk baggrund eller omvendt — mindretals-
+// intensiteten (den der fylder mindst i feltet) regnes som selve tallet, resten som
+// baggrund/støj, som dermed forsvinder helt i stedet for at forstyrre OCR'en.
+function cropToBinaryCanvas(sourceCanvas, sx, sy, sw, sh, scale) {
+  const out = document.createElement("canvas");
+  out.width = Math.max(1, Math.round(sw * scale));
+  out.height = Math.max(1, Math.round(sh * scale));
+  const octx = out.getContext("2d");
+  octx.imageSmoothingEnabled = true;
+  octx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, out.width, out.height);
+  const imgData = octx.getImageData(0, 0, out.width, out.height);
+  const d = imgData.data;
+  const n = out.width * out.height;
+  const gray = new Uint8ClampedArray(n);
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    gray[p] = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
+  }
+  const t = otsuThreshold(gray, n);
+  let above = 0;
+  for (let p = 0; p < n; p++) if (gray[p] >= t) above++;
+  const textIsAbove = above < n - above; // mindretalsklassen = teksten
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    const isText = textIsAbove ? gray[p] >= t : gray[p] < t;
+    const v = isText ? 255 : 0;
+    d[i] = d[i + 1] = d[i + 2] = v;
+  }
+  octx.putImageData(imgData, 0, 0);
+  return out;
+}
+
 const NAME_WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆØÅæøå0123456789 ./-";
 const QTY_WHITELIST = "0123456789";
 
@@ -310,7 +365,7 @@ async function scanTrayImage(imgSrc, worker, materials, onProgress) {
     // NAVN: nederste ~28% stribe, fuld bredde af feltet
     const nameCanvas = cropToGrayCanvas(canvas, cell.x, cell.nameY, cell.w, cell.nameH, CROP_UPSCALE);
 
-    await worker.setParameters({ tessedit_char_whitelist: NAME_WHITELIST });
+    await worker.setParameters({ tessedit_char_whitelist: NAME_WHITELIST, tessedit_pageseg_mode: "3" });
     const { data: nameData } = await worker.recognize(nameCanvas);
     const name = (nameData.text || "").replace(/\s+/g, " ").trim();
     // Backstop: kassér KUN et resultat uden en eneste bogstav (ren støj som "4" eller
@@ -322,14 +377,25 @@ async function scanTrayImage(imgSrc, worker, materials, onProgress) {
     if (!hasLetter) continue;
 
     // ANTAL: øverste venstre hjørne (venstre ~35%, øverste ~30%). Øverste højre hjørne (vægt) ignoreres helt.
+    // Læses to gange — én gang bare gråtone (opskaleret), én gang binariseret (sort/hvid,
+    // baggrund/støj fjernet) — for at undgå forvekslede cifre som 6/8, 5/6, 3/8. PSM sættes
+    // til "enkelt tekstlinje" (7), så Tesseract ved det kun skal finde ét lille tal, ikke tekst.
     const qtyW = cell.w * QTY_WIDTH_RATIO;
     const qtyH = cell.h * QTY_HEIGHT_RATIO;
-    const qtyCanvas = cropToGrayCanvas(canvas, cell.x, cell.y, qtyW, qtyH, CROP_UPSCALE);
+    await worker.setParameters({ tessedit_char_whitelist: QTY_WHITELIST, tessedit_pageseg_mode: "7" });
 
+    const qtyCanvasGray = cropToGrayCanvas(canvas, cell.x, cell.y, qtyW, qtyH, QTY_UPSCALE);
+    const { data: qtyDataGray } = await worker.recognize(qtyCanvasGray);
+    const digitsGray = (qtyDataGray.text || "").replace(/[^0-9]/g, "");
+
+    const qtyCanvasBin = cropToBinaryCanvas(canvas, cell.x, cell.y, qtyW, qtyH, QTY_UPSCALE);
+    const { data: qtyDataBin } = await worker.recognize(qtyCanvasBin);
+    const digitsBin = (qtyDataBin.text || "").replace(/[^0-9]/g, "");
+
+    // Enige læsninger vindes stoles på; ellers foretrækkes den binariserede (typisk mest
+    // robust mod støj/baggrund), og falder den tom, bruges gråtone-læsningen i stedet.
+    const digits = digitsBin || digitsGray;
     let qty = 1;
-    await worker.setParameters({ tessedit_char_whitelist: QTY_WHITELIST });
-    const { data: qtyData } = await worker.recognize(qtyCanvas);
-    const digits = (qtyData.text || "").replace(/[^0-9]/g, "");
     if (digits) qty = Math.max(1, parseInt(digits, 10));
 
     results.push({ raw: qty > 1 ? `${name} (${qty})` : name, name, qty });
