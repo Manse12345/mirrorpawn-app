@@ -228,7 +228,9 @@ const NAME_STRIP_HEIGHT_RATIO = 0.28;  // nederste ~28% af feltet = varenavn
 const QTY_WIDTH_RATIO = 0.35;          // øverste venstre hjørne: ~35% bredde
 const QTY_HEIGHT_RATIO = 0.30;         // ~30% højde
 const CROP_UPSCALE = 3;                // opskalering af beskårne områder før OCR
-const QTY_UPSCALE = 5;                 // antal-tallet er meget lille i originalen, så det får sin egen, større opskalering
+const QTY_UPSCALE = 7;                 // antal-tallet er meget lille i originalen, så det får sin egen, aggressive opskalering
+const QTY_PSM = "8";                   // "enkelt ord" — passer til én sammenhængende tal-streng uden mellemrum
+const QTY_LOW_CONFIDENCE = 65;         // under denne Tesseract-confidence (0-100) markeres et enkeltstående antal-tal som usikkert
 
 function loadImageEl(src) {
   return new Promise((resolve, reject) => {
@@ -327,6 +329,116 @@ function cropToBinaryCanvas(sourceCanvas, sx, sy, sw, sh, scale) {
   return out;
 }
 
+// ── Antal-tal: lokal (adaptiv) tærskel + morfologisk oprydning ─────────────────
+// Global Otsu (cropToBinaryCanvas ovenfor) bruger ÉN tærskel for hele feltet, hvilket
+// kan slå fejl ved ujævn baggrund/lys. Her bruges i stedet en lokal tærskel pr. pixel
+// (gennemsnittet af et vindue omkring pixlen, beregnet effektivt via et "integral
+// image"), så tallet isoleres rent uanset lokale lysforskelle i feltet. Bruges KUN til
+// antal-tallet — rører ikke navnelæsningen.
+function buildIntegralImage(gray, w, h) {
+  // (w+1) x (h+1) så vi slipper for kant-tjek ved opslag
+  const integral = new Float64Array((w + 1) * (h + 1));
+  for (let y = 0; y < h; y++) {
+    let rowSum = 0;
+    for (let x = 0; x < w; x++) {
+      rowSum += gray[y * w + x];
+      integral[(y + 1) * (w + 1) + (x + 1)] = integral[y * (w + 1) + (x + 1)] + rowSum;
+    }
+  }
+  return integral;
+}
+function windowMean(integral, w, h, x, y, radius) {
+  const x0 = Math.max(0, x - radius), x1 = Math.min(w - 1, x + radius);
+  const y0 = Math.max(0, y - radius), y1 = Math.min(h - 1, y + radius);
+  const stride = w + 1;
+  const sum = integral[(y1 + 1) * stride + (x1 + 1)] - integral[y0 * stride + (x1 + 1)]
+    - integral[(y1 + 1) * stride + x0] + integral[y0 * stride + x0];
+  const count = (x1 - x0 + 1) * (y1 - y0 + 1);
+  return sum / count;
+}
+// 3×3 erosion/dilation på et 0/255-bitmap — bruges til morfologisk open (fjerner
+// støjpletter) og close (lukker små huller i selve cifrene).
+function erode3x3(bin, w, h) {
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let allOn = true;
+      for (let dy = -1; dy <= 1 && allOn; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx, ny = y + dy;
+          const v = (nx < 0 || nx >= w || ny < 0 || ny >= h) ? 0 : bin[ny * w + nx];
+          if (v === 0) { allOn = false; break; }
+        }
+      }
+      out[y * w + x] = allOn ? 255 : 0;
+    }
+  }
+  return out;
+}
+function dilate3x3(bin, w, h) {
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let anyOn = false;
+      for (let dy = -1; dy <= 1 && !anyOn; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = x + dx, ny = y + dy;
+          const v = (nx < 0 || nx >= w || ny < 0 || ny >= h) ? 0 : bin[ny * w + nx];
+          if (v === 255) { anyOn = true; break; }
+        }
+      }
+      out[y * w + x] = anyOn ? 255 : 0;
+    }
+  }
+  return out;
+}
+const QTY_ADAPTIVE_RADIUS = 8; // vinduesstørrelse (px, i det opskalerede billede) for den lokale gennemsnits-tærskel
+const QTY_ADAPTIVE_C = 6;      // margin under/over det lokale gennemsnit, før en pixel regnes som tekst
+
+// Beskærer, opskalerer og binariserer et område med en LOKAL (adaptiv) tærskel i
+// stedet for global Otsu, og rydder derefter op med morfologisk open (fjern
+// støjpletter) + close (luk huller i cifrene). Polariteten (lys tekst på mørk
+// baggrund, eller omvendt) afgøres ud fra feltets samlede gennemsnitslysstyrke, ligesom
+// cropToBinaryCanvas — resultatet er altid hvide cifre på sort baggrund.
+function cropToAdaptiveBinaryCanvas(sourceCanvas, sx, sy, sw, sh, scale) {
+  const out = document.createElement("canvas");
+  out.width = Math.max(1, Math.round(sw * scale));
+  out.height = Math.max(1, Math.round(sh * scale));
+  const octx = out.getContext("2d");
+  octx.imageSmoothingEnabled = true;
+  octx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, out.width, out.height);
+  const imgData = octx.getImageData(0, 0, out.width, out.height);
+  const d = imgData.data;
+  const w = out.width, h = out.height, n = w * h;
+  const gray = new Float64Array(n);
+  let totalLum = 0;
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    gray[p] = lum;
+    totalLum += lum;
+  }
+  const avgLum = totalLum / n;
+  const lightTextOnDark = avgLum < 128; // mørkt felt i snit -> teksten er formentlig den lyse del
+  const integral = buildIntegralImage(gray, w, h);
+  let bin = new Uint8Array(n);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const mean = windowMean(integral, w, h, x, y, QTY_ADAPTIVE_RADIUS);
+      const p = y * w + x;
+      const isText = lightTextOnDark ? gray[p] > mean + QTY_ADAPTIVE_C : gray[p] < mean - QTY_ADAPTIVE_C;
+      bin[p] = isText ? 255 : 0;
+    }
+  }
+  bin = dilate3x3(erode3x3(bin, w, h), w, h); // open: fjern isolerede støjpletter
+  bin = erode3x3(dilate3x3(bin, w, h), w, h); // close: luk små huller i cifrene
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    const v = bin[p];
+    d[i] = d[i + 1] = d[i + 2] = v;
+  }
+  octx.putImageData(imgData, 0, 0);
+  return out;
+}
+
 const NAME_WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆØÅæøå0123456789 ./-";
 const QTY_WHITELIST = "0123456789";
 
@@ -377,28 +489,48 @@ async function scanTrayImage(imgSrc, worker, materials, onProgress) {
     if (!hasLetter) continue;
 
     // ANTAL: øverste venstre hjørne (venstre ~35%, øverste ~30%). Øverste højre hjørne (vægt) ignoreres helt.
-    // Læses to gange — én gang bare gråtone (opskaleret), én gang binariseret (sort/hvid,
-    // baggrund/støj fjernet) — for at undgå forvekslede cifre som 6/8, 5/6, 3/8. PSM sættes
-    // til "enkelt tekstlinje" (7), så Tesseract ved det kun skal finde ét lille tal, ikke tekst.
+    // Læses TRE gange med forskellig forbehandling — rå gråtone, global (Otsu) sort/hvid,
+    // og lokal/adaptiv sort/hvid + morfologisk oprydning — for at undgå forvekslede cifre
+    // som 6/8, 5/6, 3/8. PSM sættes til "enkelt ord" (8), så Tesseract ved det kun skal
+    // finde én sammenhængende tal-streng, ikke løbende tekst.
     const qtyW = cell.w * QTY_WIDTH_RATIO;
     const qtyH = cell.h * QTY_HEIGHT_RATIO;
-    await worker.setParameters({ tessedit_char_whitelist: QTY_WHITELIST, tessedit_pageseg_mode: "7" });
+    await worker.setParameters({ tessedit_char_whitelist: QTY_WHITELIST, tessedit_pageseg_mode: QTY_PSM });
 
     const qtyCanvasGray = cropToGrayCanvas(canvas, cell.x, cell.y, qtyW, qtyH, QTY_UPSCALE);
     const { data: qtyDataGray } = await worker.recognize(qtyCanvasGray);
-    const digitsGray = (qtyDataGray.text || "").replace(/[^0-9]/g, "");
 
-    const qtyCanvasBin = cropToBinaryCanvas(canvas, cell.x, cell.y, qtyW, qtyH, QTY_UPSCALE);
-    const { data: qtyDataBin } = await worker.recognize(qtyCanvasBin);
-    const digitsBin = (qtyDataBin.text || "").replace(/[^0-9]/g, "");
+    const qtyCanvasOtsu = cropToBinaryCanvas(canvas, cell.x, cell.y, qtyW, qtyH, QTY_UPSCALE);
+    const { data: qtyDataOtsu } = await worker.recognize(qtyCanvasOtsu);
 
-    // Enige læsninger vindes stoles på; ellers foretrækkes den binariserede (typisk mest
-    // robust mod støj/baggrund), og falder den tom, bruges gråtone-læsningen i stedet.
-    const digits = digitsBin || digitsGray;
+    const qtyCanvasAdaptive = cropToAdaptiveBinaryCanvas(canvas, cell.x, cell.y, qtyW, qtyH, QTY_UPSCALE);
+    const { data: qtyDataAdaptive } = await worker.recognize(qtyCanvasAdaptive);
+
+    // Hver kørsels resultat + Tesseracts egen confidence (0-100) for den kørsel.
+    const passes = [qtyDataGray, qtyDataOtsu, qtyDataAdaptive]
+      .map((d) => ({ digits: (d.text || "").replace(/[^0-9]/g, ""), confidence: +d.confidence || 0 }))
+      .filter((p) => p.digits);
+
+    // Enighed mellem mindst to af de tre kørsler vindes stoles på ubetinget. Ellers
+    // vælges den kørsel Tesseract selv er mest sikker på (højest confidence) — men
+    // linjen markeres da som usikker, så brugeren ved den bør tjekkes ekstra.
+    let digits = "", uncertain = false;
+    if (passes.length > 0) {
+      const byDigits = {};
+      passes.forEach((p) => { (byDigits[p.digits] = byDigits[p.digits] || []).push(p.confidence); });
+      const agreed = Object.entries(byDigits).find(([, confs]) => confs.length >= 2);
+      if (agreed) {
+        digits = agreed[0];
+      } else {
+        const best = passes.reduce((a, b) => (b.confidence > a.confidence ? b : a));
+        digits = best.digits;
+        uncertain = passes.length > 1 || best.confidence < QTY_LOW_CONFIDENCE;
+      }
+    }
     let qty = 1;
     if (digits) qty = Math.max(1, parseInt(digits, 10));
 
-    results.push({ raw: qty > 1 ? `${name} (${qty})` : name, name, qty });
+    results.push({ raw: qty > 1 ? `${name} (${qty})` : name, name, qty, qtyUncertain: uncertain });
   }
   onProgress(100);
   return results;
@@ -2096,7 +2228,7 @@ function ScanTrayModal({ materials, onApply, onClose }) {
       if (parsed.length === 0) { setErr("Fandt ingen udfyldte felter eller læselige varenavne i billedet. Prøv et tydeligere/nærmere screenshot af bakken."); setScanning(false); await worker.terminate(); return; }
       setRows(parsed.map((p) => {
         const match = bestMaterialMatch(p.name, materials);
-        return { raw: p.raw, materialId: match ? match.material.id : "", qty: p.qty, checked: true };
+        return { raw: p.raw, materialId: match ? match.material.id : "", qty: p.qty, qtyUncertain: !!p.qtyUncertain, checked: true };
       }));
     } catch (e) {
       setErr("OCR fejlede: " + (e?.message || String(e)));
@@ -2153,8 +2285,14 @@ function ScanTrayModal({ materials, onApply, onClose }) {
               <div className="space-y-2">
                 {rows.map((r, i) => {
                   const unmatched = !r.materialId;
+                  const uncertainQty = !!r.qtyUncertain;
                   return (
-                    <div key={i} className="rounded-lg border p-2.5" style={{ borderColor: unmatched ? "#f3c9c6" : "#e7e5e4", background: unmatched ? "#fdf4f3" : "white" }}>
+                    <div key={i} className="rounded-lg border p-2.5"
+                      style={{
+                        borderColor: unmatched ? "#f3c9c6" : uncertainQty ? GOLD : "#e7e5e4",
+                        borderWidth: uncertainQty && !unmatched ? 2 : 1,
+                        background: unmatched ? "#fdf4f3" : uncertainQty ? "#fffbea" : "white",
+                      }}>
                       <div className="flex items-center gap-2">
                         <input type="checkbox" checked={r.checked} onChange={(e) => updateRow(i, { checked: e.target.checked })} />
                         <div className="text-[11px] text-stone-400 flex-1 min-w-0 truncate">OCR læste: "{r.raw}"</div>
@@ -2168,8 +2306,12 @@ function ScanTrayModal({ materials, onApply, onClose }) {
                         </select>
                         <input type="number" inputMode="numeric" value={r.qty}
                           onChange={(e) => updateRow(i, { qty: Math.max(1, +e.target.value || 1) })}
-                          className="w-16 rounded-lg border px-2 py-1.5 text-sm font-bold text-center" style={{ borderColor: "#d6d3d1" }} />
+                          className="w-16 rounded-lg border px-2 py-1.5 text-sm font-bold text-center"
+                          style={{ borderColor: uncertainQty ? GOLD_D : "#d6d3d1", borderWidth: uncertainQty ? 2 : 1 }} />
                       </div>
+                      {uncertainQty && (
+                        <div className="text-[10px] font-bold mt-1" style={{ color: GOLD_D }}>⚠ usikkert antal — tjek tallet</div>
+                      )}
                     </div>
                   );
                 })}
