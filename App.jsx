@@ -330,8 +330,12 @@ function cropToBinaryCanvas(sourceCanvas, sx, sy, sw, sh, scale) {
 const NAME_WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÆØÅæøå0123456789 ./-";
 const QTY_WHITELIST = "0123456789";
 
-// Skærer billedet op i bakke-felter (5 i bredden, kvadratiske) og OCR'er hvert
-// ikke-tomt felts navn- og antal-område for sig. Returnerer én { raw, name, qty } pr. fundet vare.
+// Skærer billedet op i bakke-felter (5 i bredden, kvadratiske, et DYNAMISK antal
+// rækker ud fra billedhøjden — bakken kan have flere rækker, ikke kun én) og OCR'er
+// hvert ikke-tomt felts navn- og antal-område for sig. Returnerer
+// { items: [{ raw, name, qty, qtyUncertain }], fieldsCount } — fieldsCount er antal
+// felter der blev vurderet UDFYLDTE (før OCR), så kaldestedet kan sammenligne det med
+// antal linjer der faktisk blev læst og gøre en eventuel uoverensstemmelse synlig.
 async function scanTrayImage(imgSrc, worker, materials, onProgress) {
   const img = await loadImageEl(imgSrc);
   const canvas = document.createElement("canvas");
@@ -342,20 +346,27 @@ async function scanTrayImage(imgSrc, worker, materials, onProgress) {
 
   const cellW = canvas.width / TRAY_COLS;
   const cellH = cellW; // felterne antages kvadratiske
-  const rows = Math.floor(canvas.height / cellH);
-  if (rows < 1) throw new Error("Billedet er for lille/forkert formet til at finde bakke-felter.");
+  // Antal rækker beregnes DYNAMISK ud fra billedets højde — ikke hardcodet til 1.
+  // Math.ceil (ikke floor), så en sidste række, der er en anelse kortere end en fuld
+  // feltehøjde (fx fordi screenshottet er beskåret tæt om bakken), stadig tælles med
+  // i stedet for at blive droppet helt — dens reelle højde bruges nedenfor.
+  const rows = Math.max(1, Math.ceil(canvas.height / cellH));
+  if (canvas.width < cellW || canvas.height < cellH * 0.4) throw new Error("Billedet er for lille/forkert formet til at finde bakke-felter.");
 
   const cells = [];
   for (let r = 0; r < rows; r++) {
+    const y = r * cellH;
+    const rowH = Math.min(cellH, canvas.height - y); // sidste række kan være delvist afskåret
+    if (rowH < cellH * 0.4) continue; // for lidt af rækken synlig til at kunne læses pålideligt
     for (let c = 0; c < TRAY_COLS; c++) {
-      const x = c * cellW, y = r * cellH;
-      const nameH = cellH * NAME_STRIP_HEIGHT_RATIO;
-      const nameY = y + cellH - nameH;
+      const x = c * cellW;
+      const nameH = rowH * NAME_STRIP_HEIGHT_RATIO;
+      const nameY = y + rowH - nameH;
       if (isNameStripEmpty(ctx, x, nameY, cellW, nameH)) continue; // tomt felt -> spring helt over, ingen OCR
-      cells.push({ x, y, w: cellW, h: cellH, nameY, nameH });
+      cells.push({ x, y, w: cellW, h: rowH, nameY, nameH });
     }
   }
-  if (cells.length === 0) return [];
+  if (cells.length === 0) return { items: [], fieldsCount: 0 };
 
   const results = [];
   for (let i = 0; i < cells.length; i++) {
@@ -404,7 +415,7 @@ async function scanTrayImage(imgSrc, worker, materials, onProgress) {
     results.push({ raw: qty > 1 ? `${name} (${qty})` : name, name, qty, qtyUncertain });
   }
   onProgress(100);
-  return results;
+  return { items: results, fieldsCount: cells.length };
 }
 
 export default function App() {
@@ -2068,6 +2079,7 @@ function ScanTrayModal({ materials, onApply, onClose }) {
   const [progress, setProgress] = useState(0);
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState("");
+  const [fieldsCount, setFieldsCount] = useState(0); // antal felter OCR'en vurderede var udfyldte — bruges til uoverensstemmelses-tjekket nedenfor
   const fileInputRef = useRef(null);
 
   const loadImage = (fileOrBlob) => {
@@ -2096,8 +2108,9 @@ function ScanTrayModal({ materials, onApply, onClose }) {
       const { createWorker } = await import("tesseract.js");
       worker = await createWorker("eng");
       const parsed = await scanTrayImage(imgSrc, worker, materials, setProgress);
-      if (parsed.length === 0) { setErr("Fandt ingen udfyldte felter eller læselige varenavne i billedet. Prøv et tydeligere/nærmere screenshot af bakken."); setScanning(false); await worker.terminate(); return; }
-      setRows(parsed.map((p) => {
+      if (parsed.items.length === 0) { setErr("Fandt ingen udfyldte felter eller læselige varenavne i billedet. Prøv et tydeligere/nærmere screenshot af bakken."); setScanning(false); await worker.terminate(); return; }
+      setFieldsCount(parsed.fieldsCount);
+      setRows(parsed.items.map((p) => {
         const match = bestMaterialMatch(p.name, materials);
         return { raw: p.raw, materialId: match ? match.material.id : "", qty: p.qty, qtyUncertain: !!p.qtyUncertain, checked: true };
       }));
@@ -2153,6 +2166,12 @@ function ScanTrayModal({ materials, onApply, onClose }) {
               <div className="text-xs text-stone-500">
                 Fandt {rows.length} linje{rows.length === 1 ? "" : "r"} — {matchedCount} matchede automatisk. Tjek og ret gerne før du lægger dem i kurven.
               </div>
+              {fieldsCount > rows.length && (
+                <div className="text-xs font-bold" style={{ color: RED }}>
+                  ⚠ Billedet så ud til at have {fieldsCount} udfyldte felter, men kun {rows.length} kunne læses som varelinjer — tjek billedet for de{" "}
+                  {fieldsCount - rows.length} manglende.
+                </div>
+              )}
               <div className="space-y-2">
                 {rows.map((r, i) => {
                   const unmatched = !r.materialId;
