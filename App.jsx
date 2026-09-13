@@ -155,6 +155,8 @@ function containsWholeWord(haystack, needle) {
 const OCR_NAME_OVERRIDES = {
   "TRE": "Træ",
   "FLYDENDE GEDNI": "Flydende Gødning",
+  "STAL": "Stål",
+  "STÅL": "Stål",
 };
 // OCR forveksler ofte danske specialtegn med deres "udskrevne" form (fx TRÆ læses som
 // TRE eller TRAE, STÅL som STAL). Behandler æ/ae, ø/oe og å/aa som ens — begge veje —
@@ -311,15 +313,13 @@ async function scanTrayImage(imgSrc, worker, materials, onProgress) {
     await worker.setParameters({ tessedit_char_whitelist: NAME_WHITELIST });
     const { data: nameData } = await worker.recognize(nameCanvas);
     const name = (nameData.text || "").replace(/\s+/g, " ").trim();
-    // Backstop: kassér rester som "4" eller "J" fra støj i et (ikke-tomt) felt — men kun
-    // hvis navnet hverken er "langt nok" til at være troværdigt i sig selv, ELLER matcher
-    // en kendt vare. Ellers ryger korte, men gyldige, varenavne som "SKO" ud ved en fejl.
-    // Feltet er allerede tjekket for at være ikke-tomt (isNameStripEmpty), så det her handler
-    // udelukkende om at skelne OCR-skrald fra et rigtigt, bare kort, varenavn.
+    // Backstop: kassér KUN et resultat uden en eneste bogstav (ren støj som "4" eller
+    // punktummer). Feltet er allerede tjekket for at være ikke-tomt via isNameStripEmpty
+    // (lys bundstribe = rigtig tekst dernede), SÅ vi stoler på det og beholder linjen,
+    // uanset hvor kort/ulæseligt OCR-navnet blev — ellers ryger korte, men gyldige,
+    // varenavne som "SKO" eller "STÅL" ud, fordi OCR kun fik fat i et par bogstaver.
     const hasLetter = /[A-Za-zÆØÅæøå]/.test(name);
     if (!hasLetter) continue;
-    const longEnough = name.replace(/\s+/g, "").length >= 3;
-    if (!longEnough && !bestMaterialMatch(name, materials)) continue;
 
     // ANTAL: øverste venstre hjørne (venstre ~35%, øverste ~30%). Øverste højre hjørne (vægt) ignoreres helt.
     const qtyW = cell.w * QTY_WIDTH_RATIO;
