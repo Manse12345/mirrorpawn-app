@@ -191,6 +191,24 @@ export async function setMaterialVisibility(materialId, visible) {
   if (error) throw error;
 }
 
+// ---- Billede-URL pr. vare til den offentlige prisliste ----
+// Samme "inventory"-kolonne-mønster som vis_offentligt ovenfor — se
+// 7-public-pricelist-upgrade.sql. Valgfrit: en tom/ikke-sat URL betyder blot at
+// /priser viser sit ikon-fallback for varen i stedet for et billede.
+export async function loadMaterialImages() {
+  const { data, error } = await supabase.from("inventory").select("material_id, billede_url");
+  if (error) throw error;
+  const map = {};
+  (data || []).forEach((r) => { if (r.billede_url) map[r.material_id] = r.billede_url; });
+  return map;
+}
+export async function setMaterialImage(materialId, url) {
+  const { error } = await supabase
+    .from("inventory")
+    .upsert({ material_id: materialId, billede_url: url || null, updated_at: new Date().toISOString() });
+  if (error) throw error;
+}
+
 // ---- Crafting ----
 // Trækker de forbrugte materialer fra lageret og lægger den craftede vare til —
 // alt sammen i én atomisk DB-transaktion (se funktionen craft_item i schema-filen).
@@ -264,15 +282,16 @@ export async function loadPublicLeaderboard() {
 
 // ---- Offentlig prisliste (login-fri) ----
 // Bruges af den login-fri /priser-side. Går udelukkende via get_public_pricelist()-
-// RPC'en (security definer i databasen — se 6-public-pricelist.sql), som KUN
-// returnerer varenavn, købspris, salgspris og en "på lager"-boolean for varer
-// markeret "vis offentligt" — aldrig det præcise lagerantal, kassen eller andre
+// RPC'en (security definer i databasen — se 6-public-pricelist.sql og
+// 7-public-pricelist-upgrade.sql), som KUN returnerer varenavn, købspris, salgspris,
+// en "på lager"-boolean, en valgfri billede-URL og kategori-navn for varer markeret
+// "vis offentligt" — aldrig det præcise lagerantal, kassen eller andre
 // tabeller/kundedata. Anon har ingen direkte adgang til nogen tabel; kun lov til at
 // kalde denne ene funktion. Kræver ikke login.
 export async function loadPublicPriceList() {
   const { data, error } = await supabase.rpc("get_public_pricelist");
   if (error) throw error;
-  return data || []; // [{ name, price, sell, in_stock }]
+  return data || []; // [{ name, price, sell, in_stock, image_url, category }]
 }
 
 export const supabaseReady = true;

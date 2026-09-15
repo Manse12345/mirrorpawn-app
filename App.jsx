@@ -6,6 +6,7 @@ import {
   createStaff, updateStaff, deleteStaff,
   loadInventory, adjustInventory, setInventoryQty,
   loadMaterialVisibility, setMaterialVisibility as sbSetMaterialVisibility,
+  loadMaterialImages, setMaterialImage as sbSetMaterialImage,
   loadCash, adjustCash, setCash,
   deleteCustomer, craftItem, reverseSale,
   loadLeaderboardSettings, saveLeaderboardSettings,
@@ -698,6 +699,10 @@ export default function App() {
   // supabase-store.js), så dette aldrig rører lagerlogikken ovenfor.
   const [materialVisibility, setMaterialVisibilityState] = useState({});
   const loadMaterialVisibilityFn = async () => { try { setMaterialVisibilityState(await loadMaterialVisibility()); } catch (e) {} };
+  // material_id -> billede-URL til prisliste-siden (samme "adskilt fra lagerlogikken"-
+  // princip som materialVisibility ovenfor — se loadMaterialImages/setMaterialImage).
+  const [materialImages, setMaterialImagesState] = useState({});
+  const loadMaterialImagesFn = async () => { try { setMaterialImagesState(await loadMaterialImages()); } catch (e) {} };
   const [cash, setCashState] = useState(0);
   const loadCashFn = async () => { try { setCashState(await loadCash()); } catch (e) {} };
   const [lbSettings, setLbSettings] = useState(null); // { name, start_at, end_at, active }
@@ -823,6 +828,10 @@ export default function App() {
     setMaterialVisibilityState((prev) => ({ ...prev, [materialId]: visible }));
     try { await sbSetMaterialVisibility(materialId, visible); } catch (e) {}
   };
+  const handleSetMaterialImage = async (materialId, url) => {
+    setMaterialImagesState((prev) => ({ ...prev, [materialId]: url }));
+    try { await sbSetMaterialImage(materialId, url); } catch (e) {}
+  };
 
   // Crafter "qty" stk. af en opskrift: opretter evt. den færdige vare i materialelisten
   // (hvis den ikke findes i forvejen, matchet på navn), og trækker/lægger til lageret
@@ -869,14 +878,14 @@ export default function App() {
   };
 
   const editingRef = useRef(false);
-  useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); loadMaterialVisibilityFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); } }, [profile]);
+  useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); } }, [profile]);
   useEffect(() => {
     if (!profile) return;
     const poll = setInterval(() => {
       // hent nye priser i baggrunden — men aldrig mens ejeren redigerer
-      if (!editingRef.current && document.visibilityState === "visible") { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadMaterialVisibilityFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); }
+      if (!editingRef.current && document.visibilityState === "visible") { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); }
     }, 12000);
-    const onVis = () => { if (document.visibilityState === "visible" && !editingRef.current) { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadMaterialVisibilityFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); } };
+    const onVis = () => { if (document.visibilityState === "visible" && !editingRef.current) { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); } };
     document.addEventListener("visibilitychange", onVis);
     return () => { clearInterval(poll); document.removeEventListener("visibilitychange", onVis); };
   }, [profile]);
@@ -1281,7 +1290,8 @@ export default function App() {
         <TopCustomers sales={sales} config={config} cur={cur} wide={wide} />
       ) : showSettings ? (
         <PriceSettings config={config} save={saveConfig} close={() => { setShowSettings(false); editingRef.current = false; }} wide={wide}
-          visibility={materialVisibility} onTogglePublic={handleTogglePublic} />
+          visibility={materialVisibility} onTogglePublic={handleTogglePublic}
+          images={materialImages} onSetImage={handleSetMaterialImage} />
       ) : (
         <div className={wide ? "flex gap-5 px-8 pt-6 items-start" : "px-3 pt-3 space-y-2"}>
           <div className={wide ? "flex-1 min-w-0 space-y-3" : "space-y-2"}>
@@ -2890,7 +2900,41 @@ function TopCustomers({ sales, config, cur, wide }) {
 }
 
 /* ── Indstillinger: butik, valuta, materialer ── */
-function PriceSettings({ config, save, close, wide, visibility, onTogglePublic }) {
+// Billede-URL pr. vare til den offentlige prisliste. Samme "lokal kladde + dirty-Gem-
+// knap"-mønster som CustomerPhoneEditor ovenfor — holder brugerens indtastning isoleret
+// fra baggrunds-genindlæsning af "images", og gemmer kun når man selv trykker Gem.
+function MaterialImageEditor({ dk, url, onSave }) {
+  const [value, setValue] = useState(url || "");
+  const [busy, setBusy] = useState(false);
+  const [savedFlash, setSavedFlash] = useState(false);
+  const dirty = value.trim() !== (url || "").trim();
+  const inp = "rounded-lg border px-2 py-2 text-sm " + (dk ? "" : "border-stone-300 bg-white");
+  const inpStyle = dk ? { borderColor: "#3a3a3a", background: PANEL, color: "white" } : {};
+  const lab = dk ? { color: "#9ca3af" } : { color: "#78716c" };
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await onSave(value.trim());
+      setSavedFlash(true); setTimeout(() => setSavedFlash(false), 1500);
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <label className="flex items-center gap-1.5">
+      <span className="text-[11px] shrink-0" style={lab}>Billede-URL</span>
+      <input value={value} onChange={(e) => setValue(e.target.value)} placeholder="https://… (valgfrit)"
+        className={inp + " flex-1 min-w-0"} style={inpStyle} />
+      {dirty && (
+        <button disabled={busy} onClick={save} className="px-2.5 py-1.5 rounded-lg font-bold text-xs shrink-0" style={{ background: GOLD, color: INK }}>
+          {savedFlash ? "Gemt!" : (busy ? "…" : "Gem")}
+        </button>
+      )}
+    </label>
+  );
+}
+
+function PriceSettings({ config, save, close, wide, visibility, onTogglePublic, images, onSetImage }) {
   const [shopName, setShopName] = useState(config.shopName);
   const [currency, setCurrency] = useState(config.currency);
   const [pointsPer, setPointsPer] = useState(config.pointsPer || 1000);
@@ -3062,6 +3106,7 @@ function PriceSettings({ config, save, close, wide, visibility, onTogglePublic }
                   Vis offentligt på <span style={{ color: dk ? GOLD : GOLD_D }}>/priser</span>
                 </span>
               </label>
+              <MaterialImageEditor dk={dk} url={images?.[m.id]} onSave={(url) => onSetImage(m.id, url)} />
             </div>
           ))}
         </div>
@@ -3087,7 +3132,7 @@ function PriceSettings({ config, save, close, wide, visibility, onTogglePublic }
       <button onClick={commit} className="w-full py-3 rounded-xl font-black" style={dk ? { background: GOLD, color: INK } : { background: BLUE, color: "white" }}>
         <Check size={16} className="inline mr-1" /> Gem alt
       </button>
-      <div className="text-[11px]" style={dk ? { color: "#6b7280" } : { color: "#a8a29e" }}>Standardpriserne bruges automatisk — under en handel kan du stadig rette prisen pr. materiale uden at ændre standarden. Rækkefølgen her styrer rækkefølgen i listen. "Vis offentligt" gemmes med det samme (rører ikke "Gem alt").</div>
+      <div className="text-[11px]" style={dk ? { color: "#6b7280" } : { color: "#a8a29e" }}>Standardpriserne bruges automatisk — under en handel kan du stadig rette prisen pr. materiale uden at ændre standarden. Rækkefølgen her styrer rækkefølgen i listen. "Vis offentligt" og "Billede-URL" gemmes hver for sig, med det samme (rører ikke "Gem alt").</div>
     </div>
   );
 }
