@@ -119,10 +119,7 @@ function sortByStockThenTrades(list, inventory, tradeCounts) {
 }
 
 // ── Handel: lager-/kasse-påvirkning ─────────────────────────────────────────
-// Delt mellem commitTrade (udfører den faktiske bogføring) og tjekket i beginSaveTrade,
-// der forhindrer en handel i at gøre kassen eller lageret negativt (se tradeBlockingError
-// i App). Holdt som rene funktioner ét sted, så de to steder aldrig kan komme til at
-// regne beløbet forskelligt.
+// Bruges af commitTrade til at beregne kassens faktiske ændring ved en handel.
 function tradeStockLines(trade) {
   return (trade.lines || []).filter((l) => !l.isCounter);
 }
@@ -680,7 +677,6 @@ export default function App() {
   const [activeCat, setActiveCat] = useState("Alle");
   const [savedFlash, setSavedFlash] = useState(false);
   const [craftError, setCraftError] = useState(""); // vist når craft-delen af et salg ikke kunne gennemføres (fx for få materialer)
-  const [tradeBlockError, setTradeBlockError] = useState(""); // vist når en handel blokeres pga. negativ kasse/lager (se tradeBlockingError)
   const [custId, setCustId] = useState("");
   const [openCust, setOpenCust] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -1048,26 +1044,6 @@ export default function App() {
     })();
   };
 
-  // Tjekker FØR en handel bogføres, om den overhovedet kan gennemføres uden at gøre
-  // kassen eller et lagertal negativt. KØB rører kun kassen (lageret kan kun stige ved
-  // køb); SALG rører kun lageret (kassen kan kun stige ved salg) — se tradeCashDelta/
-  // tradeStockLines. Returnerer en besked hvis handlen skal blokeres, ellers "".
-  // Rører IKKE crafting-logikken (craftJobs/craftShortage i commitTrade er uændret).
-  const tradeBlockingError = (t) => {
-    if (t.type === "buy") {
-      const newCash = cash + tradeCashDelta(t);
-      if (newCash < 0) return `Ikke nok kontanter — mangler ${fmt(-newCash)} ${config.currency}.`;
-      return "";
-    }
-    const shortages = tradeStockLines(t)
-      .map((l) => ({ name: l.name, have: inventory[l.id] || 0, need: l.qty }))
-      .filter((s) => s.need > s.have);
-    if (shortages.length === 0) return "";
-    return shortages
-      .map((s) => `Ikke nok på lager af ${s.name} — har ${s.have}, kræver ${s.need}.`)
-      .join(" ");
-  };
-
   // Tryk på "Gem salg & kvittering" / "Gem handel & kvittering". Bygger handlen ud fra
   // kurven. KØB bogføres stadig med det samme, som hidtil (kvitteringen er bare en
   // visning bagefter). SALG bogføres INTET endnu — handlen afventer i stedet "Craftede
@@ -1088,15 +1064,6 @@ export default function App() {
       total, sellTotal, profit,
       sellerId: profile.id, sellerName: profile.name, commission: 0,
     };
-
-    // Punkt: bloker handler der ville gøre kassen eller lageret negativt. Intet gemmes
-    // eller trækkes, hvis handlen ikke kan gennemføres helt (ingen delvise træk).
-    const blockMsg = tradeBlockingError(trade);
-    if (blockMsg) {
-      setTradeBlockError(blockMsg);
-      setTimeout(() => setTradeBlockError((cur) => (cur === blockMsg ? "" : cur)), 8000);
-      return;
-    }
 
     // Punkt: bekræft store beløb. Rører ikke selve gem-logikken herunder — kun en
     // ekstra "er du sikker?"-bekræftelse FØR den uændrede køb/salg-logik køres.
@@ -1165,11 +1132,6 @@ export default function App() {
         <button onClick={() => setCraftError("")}
           className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full font-bold text-sm shadow-lg text-left"
           style={{ background: RED, color: "white", maxWidth: 420 }}>⚠ {craftError}</button>
-      )}
-      {tradeBlockError && (
-        <button onClick={() => setTradeBlockError("")}
-          className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full font-bold text-sm shadow-lg text-left"
-          style={{ background: RED, color: "white", maxWidth: 420 }}>⛔ {tradeBlockError}</button>
       )}
       {reverseErr && (
         <button onClick={() => setReverseErr("")}
@@ -1426,7 +1388,7 @@ export default function App() {
                 )}
                 {oversell && (
                   <div className="text-[11px] font-bold mt-1.5" style={{ color: "#f87171" }}>
-                    ⚠ Kun {stock} på lager — handlen kan ikke gemmes med dette antal.
+                    ⚠ Kun {stock} på lager — salget kan stadig gemmes, men lageret går i minus.
                   </div>
                 )}
               </div>
