@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, Lock, Package, ArrowLeftRight, Home, Camera, Hammer, Trophy, TrendingUp, Star } from "lucide-react";
+import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, Lock, Package, ArrowLeftRight, Home, Camera, Hammer, Trophy, TrendingUp, Star, Pencil } from "lucide-react";
 import {
   loadConfig, saveConfig as sbSaveConfig, loadSales as sbLoadSales, insertSale, logEvent,
   signIn, signOut, getSession, onAuthChange, loadMyProfile, loadAllProfiles,
@@ -8,7 +8,7 @@ import {
   loadMaterialVisibility, setMaterialVisibility as sbSetMaterialVisibility,
   loadMaterialImages, setMaterialImage as sbSetMaterialImage,
   loadCash, adjustCash, setCash,
-  deleteCustomer, craftItem, reverseSale,
+  deleteCustomer, craftItem, reverseSale, updateSaleCustomer, editSaleAmount,
   loadLeaderboardSettings, saveLeaderboardSettings,
   loadCustomerPhones, saveCustomerPhone,
 } from "./supabase-store.js";
@@ -797,13 +797,22 @@ export default function App() {
     try { await deleteCustomer(id); } catch (e) {}
   };
 
-  // ── Fortryd handel (Dagbog) ──
+  // ── Dagbog-handlinger på en enkelt handel (fortryd / ret kunde-ID / ret beløb) ──
+  // Delt fejl-banner for alle tre — de er alle "ret en gemt handel"-handlinger med
+  // samme slags fejlvisning, men helt uafhængige funktioner/DB-kald, så en fejl i
+  // én af dem ikke rører de andre.
+  const [rowActionErr, setRowActionErr] = useState("");
+  const flashRowActionErr = (msg) => {
+    setRowActionErr(msg);
+    setTimeout(() => setRowActionErr((cur) => (cur === msg ? "" : cur)), 8000);
+  };
+
   // Ruller handlen tilbage ATOMISK i databasen (lager + kasse modregnes, og handlen
-  // markeres "reversed" — se reverse_sale i 5-undo-trade.sql). Kunde-point og
-  // handler-tæller er udledt af salgshistorikken (buildCustomers/computeTradeCounts),
-  // så de rettes automatisk, blot ved at handlen forsvinder fra den indlæste liste
-  // herunder. Databasen afviser selv et andet forsøg på at fortryde samme handel igen.
-  const [reverseErr, setReverseErr] = useState("");
+  // markeres "reversed" — se reverse_sale i 5-undo-trade.sql/8-edit-sale.sql). Kunde-
+  // point og handler-tæller er udledt af salgshistorikken (buildCustomers/
+  // computeTradeCounts), så de rettes automatisk, blot ved at handlen forsvinder fra
+  // den indlæste liste herunder. Databasen afviser selv et andet forsøg på at
+  // fortryde samme handel igen.
   const handleReverseTrade = async (trade) => {
     const ok = window.confirm(
       `Fortryd denne handel på ${fmt(trade.total)} ${config.currency}?\n\n` +
@@ -815,9 +824,46 @@ export default function App() {
       setSales((prev) => prev.filter((s) => s.id !== trade.id));
       loadCashFn(); loadInventoryFn();
     } catch (e) {
-      const msg = e?.message || "Ukendt fejl.";
-      setReverseErr(`Kunne ikke fortryde handlen: ${msg}`);
-      setTimeout(() => setReverseErr((cur) => (cur === `Kunne ikke fortryde handlen: ${msg}` ? "" : cur)), 8000);
+      flashRowActionErr(`Kunne ikke fortryde handlen: ${e?.message || "Ukendt fejl."}`);
+    }
+  };
+
+  // Retter kunde-ID på en handel bagefter (fx glemt under handlen). Ren tekst-
+  // opdatering — rører ALDRIG kasse eller lager. Kunde-point/handler-tæller er
+  // udledt af salgshistorikken, så handlen tæller automatisk med for den NYE kunde,
+  // som om den havde været der fra start, næse gang siden viser kundens tal.
+  const handleEditTradeCustomer = async (trade, newCustIdRaw) => {
+    const newCustId = (newCustIdRaw || "").trim();
+    if (newCustId === (trade.custId || "")) return;
+    try {
+      await updateSaleCustomer(trade.dbId, newCustId);
+      setSales((prev) => prev.map((s) => (s.id === trade.id ? { ...s, custId: newCustId } : s)));
+    } catch (e) {
+      flashRowActionErr(`Kunne ikke rette kunde-ID: ${e?.message || "Ukendt fejl."}`);
+    }
+  };
+
+  // Retter beløbet ("total") på en handel. Kassen justeres ATOMISK i databasen med
+  // PRÆCIS forskellen (edit_sale_amount i 8-edit-sale.sql, samme regel som
+  // beskrevet i bekræftelsen) — lageret røres ALDRIG, kun de samme varer skiftede
+  // hænder til en anden pris. Kan rettes igen bagefter (regner altid fra den
+  // senest gemte total, ikke fra originalen).
+  const handleEditTradeAmount = async (trade, newTotalRaw) => {
+    const newTotal = Math.max(0, Math.round(+newTotalRaw || 0));
+    if (newTotal === Math.round(trade.total)) return;
+    const ok = window.confirm(
+      `Ret beløb fra ${fmt(trade.total)} ${config.currency} til ${fmt(newTotal)} ${config.currency}?\n\n` +
+      `Kassen justeres automatisk med forskellen. Lageret røres ikke.`
+    );
+    if (!ok) return;
+    const deltaTotal = newTotal - trade.total;
+    const deltaProfit = trade.type === "buy" ? -deltaTotal : deltaTotal;
+    try {
+      await editSaleAmount(trade.dbId, newTotal);
+      setSales((prev) => prev.map((s) => (s.id === trade.id ? { ...s, total: newTotal, profit: s.profit + deltaProfit } : s)));
+      loadCashFn();
+    } catch (e) {
+      flashRowActionErr(`Kunne ikke rette beløbet: ${e?.message || "Ukendt fejl."}`);
     }
   };
 
@@ -1051,7 +1097,10 @@ export default function App() {
     // skriv til databasen + log hændelser til Discord
     (async () => {
       try {
-        await insertSale(trade);
+        // cashDelta gemmes MED handlen (se 8-edit-sale.sql) så en senere "Ret beløb"
+        // eller "Fortryd handel" altid kan tage udgangspunkt i, hvad denne handel
+        // FAKTISK flyttede kassen med — uden at skulle genberegne det fra varelinjerne.
+        await insertSale({ ...trade, cashDelta });
         await Promise.all(stockLines.map((l) => adjustInventory(l.id, invDelta * l.qty)));
         await adjustCash(cashDelta);
         if (craftOk) {
@@ -1156,10 +1205,10 @@ export default function App() {
           className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full font-bold text-sm shadow-lg text-left"
           style={{ background: RED, color: "white", maxWidth: 420 }}>⚠ {craftError}</button>
       )}
-      {reverseErr && (
-        <button onClick={() => setReverseErr("")}
+      {rowActionErr && (
+        <button onClick={() => setRowActionErr("")}
           className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full font-bold text-sm shadow-lg text-left"
-          style={{ background: RED, color: "white", maxWidth: 420 }}>⚠ {reverseErr}</button>
+          style={{ background: RED, color: "white", maxWidth: 420 }}>⚠ {rowActionErr}</button>
       )}
 
       {/* Header */}
@@ -1283,7 +1332,7 @@ export default function App() {
           }} />
       ) : view === "log" && !showSettings ? (
         <SalesLog sales={sales} cur={cur} wide={wide} onClear={() => { if (isOwner) saveSales([]); }} role={profile.role}
-          onReverse={handleReverseTrade} />
+          onReverse={handleReverseTrade} onEditCustomer={handleEditTradeCustomer} onEditAmount={handleEditTradeAmount} />
       ) : view === "topvarer" && !showSettings ? (
         <TopMarginItems sales={sales} config={config} cur={cur} wide={wide} />
       ) : view === "stamkunder" && !showSettings ? (
@@ -2696,7 +2745,74 @@ function CraftCheckModal({ matches, onDecide }) {
 }
 
 /* ── Salgs-dagbog ── */
-function SalesLog({ sales, cur, wide, onClear, onReverse, role }) {
+// Inline "Rediger kunde-ID" på en enkelt handel i Dagbogen — ren tekst-opdatering,
+// rører ALDRIG kasse eller lager (se handleEditTradeCustomer i App). Toggle-mønster:
+// vis kun en lille knap, indtil man klikker den, så listen ikke fyldes med åbne felter.
+function TradeCustIdEditor({ dk, custId, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(custId || "");
+  const [busy, setBusy] = useState(false);
+  const sub = dk ? "#9ca3af" : "#78716c";
+
+  if (!editing) {
+    return (
+      <button onClick={() => { setValue(custId || ""); setEditing(true); }}
+        className="text-[11px] font-bold flex items-center gap-1" style={{ color: dk ? GOLD : BLUE }}>
+        <Pencil size={11} /> {custId ? "Rediger kunde-ID" : "Tilføj kunde-ID"}
+      </button>
+    );
+  }
+  const commit = async () => {
+    setBusy(true);
+    try { await onSave(value); } finally { setBusy(false); setEditing(false); }
+  };
+  return (
+    <div className="flex items-center gap-1.5">
+      <input autoFocus value={value} onChange={(e) => setValue(e.target.value)} placeholder="Kunde-ID"
+        onKeyDown={(e) => e.key === "Enter" && commit()}
+        className="w-28 rounded-lg border px-2 py-1 text-xs font-bold"
+        style={dk ? { borderColor: "#444", background: "#111", color: "white" } : { borderColor: "#d6d3d1" }} />
+      <button disabled={busy} onClick={commit} className="p-1 rounded" style={{ color: GREEN }} aria-label="Gem kunde-ID"><Check size={14} /></button>
+      <button onClick={() => setEditing(false)} className="p-1 rounded" style={{ color: sub }} aria-label="Annullér"><X size={14} /></button>
+    </div>
+  );
+}
+
+// Inline "Ret beløb" på en enkelt handel — bekræftelsen ("Ret beløb fra A til B? …")
+// vises af handleEditTradeAmount i App, FØR databasekaldet, så man altid ser gammelt
+// og nyt beløb tydeligt inden kassen justeres.
+function TradeAmountEditor({ dk, cur, total, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(String(Math.round(total)));
+  const [busy, setBusy] = useState(false);
+  const sub = dk ? "#9ca3af" : "#78716c";
+
+  if (!editing) {
+    return (
+      <button onClick={() => { setValue(String(Math.round(total))); setEditing(true); }}
+        className="text-[11px] font-bold flex items-center gap-1" style={{ color: dk ? GOLD : BLUE }}>
+        <Pencil size={11} /> Ret beløb
+      </button>
+    );
+  }
+  const commit = async () => {
+    setBusy(true);
+    try { await onSave(value); } finally { setBusy(false); setEditing(false); }
+  };
+  return (
+    <div className="flex items-center gap-1.5">
+      <input autoFocus type="number" inputMode="numeric" value={value} onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && commit()}
+        className="w-24 rounded-lg border px-2 py-1 text-xs font-bold"
+        style={dk ? { borderColor: "#444", background: "#111", color: "white" } : { borderColor: "#d6d3d1" }} />
+      <span className="text-[10px]" style={{ color: sub }}>{cur}</span>
+      <button disabled={busy} onClick={commit} className="p-1 rounded" style={{ color: GREEN }} aria-label="Gem beløb"><Check size={14} /></button>
+      <button onClick={() => setEditing(false)} className="p-1 rounded" style={{ color: sub }} aria-label="Annullér"><X size={14} /></button>
+    </div>
+  );
+}
+
+function SalesLog({ sales, cur, wide, onClear, onReverse, onEditCustomer, onEditAmount, role }) {
   const [period, setPeriod] = useState("dag"); // dag | uge | måned | alt
   const dk = wide;
   const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
@@ -2779,6 +2895,10 @@ function SalesLog({ sales, cur, wide, onClear, onReverse, role }) {
               <div className="text-xs mt-1" style={{ color: sub }}>
                 {t.custId ? `ID ${t.custId} · ` : ""}{t.lines.map((l) => `${l.qty}× ${l.name}`).join(" · ")}
                 {t.points ? ` · +${t.points}p` : ""}
+              </div>
+              <div className="flex items-center gap-4 mt-2 pt-2" style={{ borderTop: `1px solid ${dk ? "#2a2a2a" : "#f0efed"}` }}>
+                <TradeCustIdEditor dk={dk} custId={t.custId} onSave={(v) => onEditCustomer(t, v)} />
+                <TradeAmountEditor dk={dk} cur={cur} total={t.total} onSave={(v) => onEditAmount(t, v)} />
               </div>
             </div>
           );

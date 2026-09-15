@@ -95,6 +95,25 @@ export async function reverseSale(saleId) {
   const { error } = await supabase.rpc("reverse_sale", { p_sale_id: saleId });
   if (error) throw error;
 }
+
+// Retter kunde-ID på en allerede gemt handel (fx glemt under selve handlen). Ren
+// tekst-opdatering — rører ALDRIG kasse eller lager. Kunde-point/handler-tæller er
+// udledt af salgshistorikken (se loadSales ovenfor), så handlen tæller automatisk
+// med for den NYE kunde, som om den havde været der fra start.
+export async function updateSaleCustomer(saleId, custId) {
+  const { error } = await supabase.from("sales").update({ cust_id: custId || null }).eq("id", saleId);
+  if (error) throw error;
+}
+
+// Retter beløbet ("total") på en handel ATOMISK i databasen: kassen justeres med
+// PRÆCIS forskellen, profit/avance justeres tilsvarende, og handlens gemte
+// cash_delta opdateres, så en SENERE "Fortryd handel" stadig rammer korrekt — se
+// edit_sale_amount i 8-edit-sale.sql. Lageret røres ALDRIG. Kan kaldes igen på
+// samme handel — regner altid fra den senest gemte total.
+export async function editSaleAmount(saleId, newTotal) {
+  const { error } = await supabase.rpc("edit_sale_amount", { p_sale_id: saleId, p_new_total: newTotal });
+  if (error) throw error;
+}
 // Sletter en kunde ved at slette alle dennes handler (kunder er udledt af salgshistorikken)
 export async function deleteCustomer(custId) {
   const { error } = await supabase.from("sales").delete().eq("cust_id", custId);
@@ -123,7 +142,7 @@ export async function saveCustomerPhone(custId, phone) {
   if (error) throw error;
 }
 export async function insertSale(trade) {
-  // trade: { at, custId, lines, total, sellTotal, profit, points, sellerId, sellerName, commission, type }
+  // trade: { at, custId, lines, total, sellTotal, profit, points, sellerId, sellerName, commission, type, cashDelta }
   const row = {
     at: new Date(trade.at).toISOString(),
     cust_id: trade.custId || null,
@@ -136,6 +155,11 @@ export async function insertSale(trade) {
     seller_name: trade.sellerName || null,
     commission: trade.commission || 0,
     type: trade.type || "buy",
+    // Præcis hvor meget DENNE handel flyttede kassen med ved bogføring (se
+    // tradeCashDelta i App.jsx) — gemmes MED handlen, så reverse_sale() og
+    // edit_sale_amount() (se 8-edit-sale.sql) altid kan tage udgangspunkt i, hvad der
+    // faktisk skete, uden at skulle genberegne det fra varelinjerne.
+    cash_delta: trade.cashDelta ?? 0,
   };
   const { data, error } = await supabase.from("sales").insert(row).select().single();
   if (error) throw error;
