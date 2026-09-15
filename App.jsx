@@ -5,6 +5,7 @@ import {
   signIn, signOut, getSession, onAuthChange, loadMyProfile, loadAllProfiles,
   createStaff, updateStaff, deleteStaff,
   loadInventory, adjustInventory, setInventoryQty,
+  loadMaterialVisibility, setMaterialVisibility as sbSetMaterialVisibility,
   loadCash, adjustCash, setCash,
   deleteCustomer, craftItem, reverseSale,
   loadLeaderboardSettings, saveLeaderboardSettings,
@@ -692,6 +693,11 @@ export default function App() {
   const refreshStaff = async () => { try { setStaffList(await loadAllProfiles()); } catch (e) {} };
   const [inventory, setInventory] = useState({}); // material_id -> qty
   const loadInventoryFn = async () => { try { setInventory(await loadInventory()); } catch (e) {} };
+  // material_id -> "vis offentligt" (styrer om varen vises på /priser). Gemt ADSKILT
+  // fra selve lagerantallet (se loadMaterialVisibility/setMaterialVisibility i
+  // supabase-store.js), så dette aldrig rører lagerlogikken ovenfor.
+  const [materialVisibility, setMaterialVisibilityState] = useState({});
+  const loadMaterialVisibilityFn = async () => { try { setMaterialVisibilityState(await loadMaterialVisibility()); } catch (e) {} };
   const [cash, setCashState] = useState(0);
   const loadCashFn = async () => { try { setCashState(await loadCash()); } catch (e) {} };
   const [lbSettings, setLbSettings] = useState(null); // { name, start_at, end_at, active }
@@ -810,6 +816,14 @@ export default function App() {
     }
   };
 
+  // ── Offentlig prisliste (/priser) — "vis offentligt" pr. vare ──
+  // Gemmes med det samme (som lagerantal/kassen), ikke som en del af PriceSettings'
+  // "Gem alt"-udkast, fordi flaget bor i "inventory", ikke i config.materials.
+  const handleTogglePublic = async (materialId, visible) => {
+    setMaterialVisibilityState((prev) => ({ ...prev, [materialId]: visible }));
+    try { await sbSetMaterialVisibility(materialId, visible); } catch (e) {}
+  };
+
   // Crafter "qty" stk. af en opskrift: opretter evt. den færdige vare i materialelisten
   // (hvis den ikke findes i forvejen, matchet på navn), og trækker/lægger til lageret
   // atomisk via craft_item i databasen. Kaster en fejl (som Crafting-visningen viser),
@@ -855,14 +869,14 @@ export default function App() {
   };
 
   const editingRef = useRef(false);
-  useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); } }, [profile]);
+  useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); loadMaterialVisibilityFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); } }, [profile]);
   useEffect(() => {
     if (!profile) return;
     const poll = setInterval(() => {
       // hent nye priser i baggrunden — men aldrig mens ejeren redigerer
-      if (!editingRef.current && document.visibilityState === "visible") { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); }
+      if (!editingRef.current && document.visibilityState === "visible") { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadMaterialVisibilityFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); }
     }, 12000);
-    const onVis = () => { if (document.visibilityState === "visible" && !editingRef.current) { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); } };
+    const onVis = () => { if (document.visibilityState === "visible" && !editingRef.current) { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadMaterialVisibilityFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); } };
     document.addEventListener("visibilitychange", onVis);
     return () => { clearInterval(poll); document.removeEventListener("visibilitychange", onVis); };
   }, [profile]);
@@ -1266,7 +1280,8 @@ export default function App() {
       ) : view === "stamkunder" && !showSettings ? (
         <TopCustomers sales={sales} config={config} cur={cur} wide={wide} />
       ) : showSettings ? (
-        <PriceSettings config={config} save={saveConfig} close={() => { setShowSettings(false); editingRef.current = false; }} wide={wide} />
+        <PriceSettings config={config} save={saveConfig} close={() => { setShowSettings(false); editingRef.current = false; }} wide={wide}
+          visibility={materialVisibility} onTogglePublic={handleTogglePublic} />
       ) : (
         <div className={wide ? "flex gap-5 px-8 pt-6 items-start" : "px-3 pt-3 space-y-2"}>
           <div className={wide ? "flex-1 min-w-0 space-y-3" : "space-y-2"}>
@@ -2875,7 +2890,7 @@ function TopCustomers({ sales, config, cur, wide }) {
 }
 
 /* ── Indstillinger: butik, valuta, materialer ── */
-function PriceSettings({ config, save, close, wide }) {
+function PriceSettings({ config, save, close, wide, visibility, onTogglePublic }) {
   const [shopName, setShopName] = useState(config.shopName);
   const [currency, setCurrency] = useState(config.currency);
   const [pointsPer, setPointsPer] = useState(config.pointsPer || 1000);
@@ -3039,6 +3054,14 @@ function PriceSettings({ config, save, close, wide }) {
                   {catList.map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
               </label>
+              <label className="flex items-center gap-2 pt-1.5" style={{ borderTop: `1px solid ${dk ? "#333" : "#f0efed"}` }}>
+                <input type="checkbox" checked={!!visibility?.[m.id]}
+                  onChange={(e) => onTogglePublic(m.id, e.target.checked)}
+                  className="w-4 h-4 rounded shrink-0" />
+                <span className="text-[11px] font-bold" style={lab}>
+                  Vis offentligt på <span style={{ color: dk ? GOLD : GOLD_D }}>/priser</span>
+                </span>
+              </label>
             </div>
           ))}
         </div>
@@ -3064,7 +3087,7 @@ function PriceSettings({ config, save, close, wide }) {
       <button onClick={commit} className="w-full py-3 rounded-xl font-black" style={dk ? { background: GOLD, color: INK } : { background: BLUE, color: "white" }}>
         <Check size={16} className="inline mr-1" /> Gem alt
       </button>
-      <div className="text-[11px]" style={dk ? { color: "#6b7280" } : { color: "#a8a29e" }}>Standardpriserne bruges automatisk — under en handel kan du stadig rette prisen pr. materiale uden at ændre standarden. Rækkefølgen her styrer rækkefølgen i listen.</div>
+      <div className="text-[11px]" style={dk ? { color: "#6b7280" } : { color: "#a8a29e" }}>Standardpriserne bruges automatisk — under en handel kan du stadig rette prisen pr. materiale uden at ændre standarden. Rækkefølgen her styrer rækkefølgen i listen. "Vis offentligt" gemmes med det samme (rører ikke "Gem alt").</div>
     </div>
   );
 }

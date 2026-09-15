@@ -170,6 +170,27 @@ export async function setInventoryQty(materialId, qty) {
   if (error) throw error;
 }
 
+// ---- Offentlig prisliste-synlighed pr. vare ----
+// "vis_offentligt" gemmes som en kolonne på "inventory" (samme tabel, der allerede
+// har én række pr. materiale — se 6-public-pricelist.sql) — ADSKILT fra selve
+// lagerantallet ("qty"), så disse to funktioner aldrig rører loadInventory/
+// adjustInventory/setInventoryQty ovenfor. Bruges af "Vis offentligt"-fluebenet i
+// Rediger-fanen; den offentlige /priser-side læser ALDRIG denne tabel direkte — kun
+// via get_public_pricelist()-RPC'en (se loadPublicPriceList nedenfor).
+export async function loadMaterialVisibility() {
+  const { data, error } = await supabase.from("inventory").select("material_id, vis_offentligt");
+  if (error) throw error;
+  const map = {};
+  (data || []).forEach((r) => { map[r.material_id] = !!r.vis_offentligt; });
+  return map;
+}
+export async function setMaterialVisibility(materialId, visible) {
+  const { error } = await supabase
+    .from("inventory")
+    .upsert({ material_id: materialId, vis_offentligt: visible, updated_at: new Date().toISOString() });
+  if (error) throw error;
+}
+
 // ---- Crafting ----
 // Trækker de forbrugte materialer fra lageret og lægger den craftede vare til —
 // alt sammen i én atomisk DB-transaktion (se funktionen craft_item i schema-filen).
@@ -239,6 +260,19 @@ export async function loadPublicLeaderboard() {
   const { data, error } = await supabase.rpc("get_public_leaderboard");
   if (error) throw error;
   return data; // { active, name?, start_at?, end_at?, prize_pool?, entries?: [{ cust_id, total }] }
+}
+
+// ---- Offentlig prisliste (login-fri) ----
+// Bruges af den login-fri /priser-side. Går udelukkende via get_public_pricelist()-
+// RPC'en (security definer i databasen — se 6-public-pricelist.sql), som KUN
+// returnerer varenavn, købspris, salgspris og en "på lager"-boolean for varer
+// markeret "vis offentligt" — aldrig det præcise lagerantal, kassen eller andre
+// tabeller/kundedata. Anon har ingen direkte adgang til nogen tabel; kun lov til at
+// kalde denne ene funktion. Kræver ikke login.
+export async function loadPublicPriceList() {
+  const { data, error } = await supabase.rpc("get_public_pricelist");
+  if (error) throw error;
+  return data || []; // [{ name, price, sell, in_stock }]
 }
 
 export const supabaseReady = true;
