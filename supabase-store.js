@@ -76,11 +76,24 @@ export async function saveConfig(data) {
 }
 
 // ---- Salg ----
+// "reversed" (se 5-undo-trade.sql) er handler der er fortrudt via Dagbogens
+// "Fortryd handel"-knap — de holdes i databasen for sporbarhed, men filtreres altid
+// væk her, så de forsvinder fra ALT der bygger på loadSales (Dagbog, Kunder, Top-varer,
+// Stamkunder, point/niveau — som alle er udledt af den liste, denne funktion returnerer).
 export async function loadSales(limit = 500) {
   const { data, error } = await supabase
-    .from("sales").select("*").order("at", { ascending: false }).limit(limit);
+    .from("sales").select("*").eq("reversed", false).order("at", { ascending: false }).limit(limit);
   if (error) throw error;
   return data;
+}
+
+// Fortryder en handel ATOMISK i databasen: modregner kassen, lægger/trækker lageret
+// tilbage for handlens varelinjer, og markerer handlen "reversed" — se reverse_sale i
+// 5-undo-trade.sql. Kaster en fejl (fanges i App), hvis handlen allerede er fortrudt
+// eller ikke findes, så den ikke kan fortrydes to gange.
+export async function reverseSale(saleId) {
+  const { error } = await supabase.rpc("reverse_sale", { p_sale_id: saleId });
+  if (error) throw error;
 }
 // Sletter en kunde ved at slette alle dennes handler (kunder er udledt af salgshistorikken)
 export async function deleteCustomer(custId) {

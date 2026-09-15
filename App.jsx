@@ -1,12 +1,12 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, Lock, Package, ArrowLeftRight, Home, Camera, Hammer, Trophy } from "lucide-react";
+import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, Lock, Package, ArrowLeftRight, Home, Camera, Hammer, Trophy, TrendingUp, Star } from "lucide-react";
 import {
   loadConfig, saveConfig as sbSaveConfig, loadSales as sbLoadSales, insertSale, logEvent,
   signIn, signOut, getSession, onAuthChange, loadMyProfile, loadAllProfiles,
   createStaff, updateStaff, deleteStaff,
   loadInventory, adjustInventory, setInventoryQty,
   loadCash, adjustCash, setCash,
-  deleteCustomer, craftItem,
+  deleteCustomer, craftItem, reverseSale,
   loadLeaderboardSettings, saveLeaderboardSettings,
   loadCustomerPhones, saveCustomerPhone,
 } from "./supabase-store.js";
@@ -95,6 +95,7 @@ const RECIPES = [
 
 const fmt = (n) => (Math.round(n) || 0).toLocaleString("da-DK");
 const PAGE_MAX = 1100; // max-bredde for indholdssider på brede skærme (Kunder/Ansatte/Rediger)
+const BIG_TRADE_CONFIRM_THRESHOLD = 500000; // over dette beløb (kr.) skal kassøren bekræfte handlen, før den gemmes
 
 // Antal styk handlet pr. vare (køb + salg lagt sammen), udledt af de handler appen allerede har indlæst
 function computeTradeCounts(sales) {
@@ -115,6 +116,26 @@ function sortByStockThenTrades(list, inventory, tradeCounts) {
     if (aOnStock !== bOnStock) return bOnStock - aOnStock;
     return (tradeCounts[b.id] || 0) - (tradeCounts[a.id] || 0);
   });
+}
+
+// ── Handel: lager-/kasse-påvirkning ─────────────────────────────────────────
+// Delt mellem commitTrade (udfører den faktiske bogføring) og tjekket i beginSaveTrade,
+// der forhindrer en handel i at gøre kassen eller lageret negativt (se tradeBlockingError
+// i App). Holdt som rene funktioner ét sted, så de to steder aldrig kan komme til at
+// regne beløbet forskelligt.
+function tradeStockLines(trade) {
+  return (trade.lines || []).filter((l) => !l.isCounter);
+}
+function tradeCounterLines(trade) {
+  return (trade.lines || []).filter((l) => l.isCounter);
+}
+// Kassens ændring ved at bogføre "trade": KØB trækker materialernes beløb fra, men
+// skranke-varers AVANCE (ikke hele udbetalingen — se commitTrade) lægges til. SALG
+// lægger hele det modtagne beløb til.
+function tradeCashDelta(trade) {
+  const materialTotal = tradeStockLines(trade).reduce((a, l) => a + l.sum, 0);
+  const counterProfitTotal = tradeCounterLines(trade).reduce((a, l) => a + ((l.baseValue || 0) - l.sum), 0);
+  return trade.type === "buy" ? (-materialTotal + counterProfitTotal) : trade.total;
 }
 
 /* ── Scan bakke: OCR-tekst -> varelinjer -> fuzzy match mod prislisten ── */
@@ -659,6 +680,7 @@ export default function App() {
   const [activeCat, setActiveCat] = useState("Alle");
   const [savedFlash, setSavedFlash] = useState(false);
   const [craftError, setCraftError] = useState(""); // vist når craft-delen af et salg ikke kunne gennemføres (fx for få materialer)
+  const [tradeBlockError, setTradeBlockError] = useState(""); // vist når en handel blokeres pga. negativ kasse/lager (se tradeBlockingError)
   const [custId, setCustId] = useState("");
   const [openCust, setOpenCust] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -754,7 +776,7 @@ export default function App() {
       const rows = await sbLoadSales();
       // map DB-felter -> app-format
       setSales((rows || []).map((r) => ({
-        id: "t" + r.id, at: new Date(r.at).getTime(), custId: r.cust_id || "",
+        id: "t" + r.id, dbId: r.id, at: new Date(r.at).getTime(), custId: r.cust_id || "",
         points: r.points, lines: r.lines, total: +r.total, sellTotal: +r.sell_total, profit: +r.profit,
         sellerId: r.seller_id || "", sellerName: r.seller_name || "", commission: +r.commission || 0,
         type: r.type || "buy",
@@ -766,6 +788,30 @@ export default function App() {
   const handleDeleteCustomer = async (id) => {
     setSales((prev) => prev.filter((s) => (s.custId || "") !== id));
     try { await deleteCustomer(id); } catch (e) {}
+  };
+
+  // ── Fortryd handel (Dagbog) ──
+  // Ruller handlen tilbage ATOMISK i databasen (lager + kasse modregnes, og handlen
+  // markeres "reversed" — se reverse_sale i 5-undo-trade.sql). Kunde-point og
+  // handler-tæller er udledt af salgshistorikken (buildCustomers/computeTradeCounts),
+  // så de rettes automatisk, blot ved at handlen forsvinder fra den indlæste liste
+  // herunder. Databasen afviser selv et andet forsøg på at fortryde samme handel igen.
+  const [reverseErr, setReverseErr] = useState("");
+  const handleReverseTrade = async (trade) => {
+    const ok = window.confirm(
+      `Fortryd denne handel på ${fmt(trade.total)} ${config.currency}?\n\n` +
+      `Lager, kasse og kunde-point/handler-tæller rettes automatisk tilbage. Handlen fjernes fra dagbogen og kan ikke fortrydes igen.`
+    );
+    if (!ok) return;
+    try {
+      await reverseSale(trade.dbId);
+      setSales((prev) => prev.filter((s) => s.id !== trade.id));
+      loadCashFn(); loadInventoryFn();
+    } catch (e) {
+      const msg = e?.message || "Ukendt fejl.";
+      setReverseErr(`Kunne ikke fortryde handlen: ${msg}`);
+      setTimeout(() => setReverseErr((cur) => (cur === `Kunne ikke fortryde handlen: ${msg}` ? "" : cur)), 8000);
+    }
   };
 
   // Crafter "qty" stk. af en opskrift: opretter evt. den færdige vare i materialelisten
@@ -921,15 +967,15 @@ export default function App() {
     const invDelta = trade.type === "buy" ? 1 : -1;
     // Skranke-varer er unikke engangsgenstande og tælles IKKE i det almindelige lager —
     // kun de "rigtige" materialelinjer justerer lagerbeholdningen (bruges også nedenfor).
-    const stockLines = trade.lines.filter((l) => !l.isCounter);
-    const counterLines = trade.lines.filter((l) => l.isCounter);
     // Skranke-varer påvirker kassen anderledes end almindelige køb: vi udbetaler kunden
     // "sum" (grundværdi × procent) af egen kasse, men får hele grundværdien tilbage fra
     // spillets skranke bagefter — så det er kun AVANCEN (grundværdi minus det kunden
     // fik), der reelt rører den kontantbeholdning, vi tracker her, ikke hele beløbet.
-    const materialTotal = stockLines.reduce((a, l) => a + l.sum, 0);
-    const counterProfitTotal = counterLines.reduce((a, l) => a + ((l.baseValue || 0) - l.sum), 0);
-    const cashDelta = trade.type === "buy" ? (-materialTotal + counterProfitTotal) : trade.total;
+    // (Se tradeStockLines/tradeCounterLines/tradeCashDelta — delt med feasibility-tjekket
+    // i beginSaveTrade, så de to steder aldrig kan komme til at regne forskelligt.)
+    const stockLines = tradeStockLines(trade);
+    const counterLines = tradeCounterLines(trade);
+    const cashDelta = tradeCashDelta(trade);
 
     // craft-materialer valgt i "Craftede du disse?" — for hver opskrift med craft-antal
     // > 0 skal råmaterialerne trækkes OG den færdige vare lægges til dens eget lager
@@ -1002,6 +1048,26 @@ export default function App() {
     })();
   };
 
+  // Tjekker FØR en handel bogføres, om den overhovedet kan gennemføres uden at gøre
+  // kassen eller et lagertal negativt. KØB rører kun kassen (lageret kan kun stige ved
+  // køb); SALG rører kun lageret (kassen kan kun stige ved salg) — se tradeCashDelta/
+  // tradeStockLines. Returnerer en besked hvis handlen skal blokeres, ellers "".
+  // Rører IKKE crafting-logikken (craftJobs/craftShortage i commitTrade er uændret).
+  const tradeBlockingError = (t) => {
+    if (t.type === "buy") {
+      const newCash = cash + tradeCashDelta(t);
+      if (newCash < 0) return `Ikke nok kontanter — mangler ${fmt(-newCash)} ${config.currency}.`;
+      return "";
+    }
+    const shortages = tradeStockLines(t)
+      .map((l) => ({ name: l.name, have: inventory[l.id] || 0, need: l.qty }))
+      .filter((s) => s.need > s.have);
+    if (shortages.length === 0) return "";
+    return shortages
+      .map((s) => `Ikke nok på lager af ${s.name} — har ${s.have}, kræver ${s.need}.`)
+      .join(" ");
+  };
+
   // Tryk på "Gem salg & kvittering" / "Gem handel & kvittering". Bygger handlen ud fra
   // kurven. KØB bogføres stadig med det samme, som hidtil (kvitteringen er bare en
   // visning bagefter). SALG bogføres INTET endnu — handlen afventer i stedet "Craftede
@@ -1022,6 +1088,25 @@ export default function App() {
       total, sellTotal, profit,
       sellerId: profile.id, sellerName: profile.name, commission: 0,
     };
+
+    // Punkt: bloker handler der ville gøre kassen eller lageret negativt. Intet gemmes
+    // eller trækkes, hvis handlen ikke kan gennemføres helt (ingen delvise træk).
+    const blockMsg = tradeBlockingError(trade);
+    if (blockMsg) {
+      setTradeBlockError(blockMsg);
+      setTimeout(() => setTradeBlockError((cur) => (cur === blockMsg ? "" : cur)), 8000);
+      return;
+    }
+
+    // Punkt: bekræft store beløb. Rører ikke selve gem-logikken herunder — kun en
+    // ekstra "er du sikker?"-bekræftelse FØR den uændrede køb/salg-logik køres.
+    if (trade.total > BIG_TRADE_CONFIRM_THRESHOLD) {
+      const ok = window.confirm(
+        `Handlens totalbeløb er ${fmt(trade.total)} ${config.currency} — over grænsen på ${fmt(BIG_TRADE_CONFIRM_THRESHOLD)} ${config.currency}.\n\n` +
+        `Er du sikker på, at du vil gemme denne handel?`
+      );
+      if (!ok) return;
+    }
 
     if (tradeMode === "buy") {
       commitTrade(trade, {});
@@ -1080,6 +1165,16 @@ export default function App() {
         <button onClick={() => setCraftError("")}
           className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full font-bold text-sm shadow-lg text-left"
           style={{ background: RED, color: "white", maxWidth: 420 }}>⚠ {craftError}</button>
+      )}
+      {tradeBlockError && (
+        <button onClick={() => setTradeBlockError("")}
+          className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full font-bold text-sm shadow-lg text-left"
+          style={{ background: RED, color: "white", maxWidth: 420 }}>⛔ {tradeBlockError}</button>
+      )}
+      {reverseErr && (
+        <button onClick={() => setReverseErr("")}
+          className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full font-bold text-sm shadow-lg text-left"
+          style={{ background: RED, color: "white", maxWidth: 420 }}>⚠ {reverseErr}</button>
       )}
 
       {/* Header */}
@@ -1146,6 +1241,16 @@ export default function App() {
             style={view === "log" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
             <BarChart3 size={16} /> Dagbog
           </button>
+          <button onClick={() => { setView(view === "topvarer" ? "beregner" : "topvarer"); setShowSettings(false); }}
+            className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
+            style={view === "topvarer" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+            <TrendingUp size={16} /> Top-varer
+          </button>
+          <button onClick={() => { setView(view === "stamkunder" ? "beregner" : "stamkunder"); setShowSettings(false); }}
+            className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
+            style={view === "stamkunder" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+            <Star size={16} /> Stamkunder
+          </button>
           {canManageStore && (
             <button onClick={toggleSettings}
               className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
@@ -1193,7 +1298,11 @@ export default function App() {
           }} />
       ) : view === "log" && !showSettings ? (
         <SalesLog sales={sales} cur={cur} wide={wide} onClear={() => { if (isOwner) saveSales([]); }} role={profile.role}
-          onDelete={(id) => saveSales(sales.filter((s) => s.id !== id))} />
+          onReverse={handleReverseTrade} />
+      ) : view === "topvarer" && !showSettings ? (
+        <TopMarginItems sales={sales} config={config} cur={cur} wide={wide} />
+      ) : view === "stamkunder" && !showSettings ? (
+        <TopCustomers sales={sales} config={config} cur={cur} wide={wide} />
       ) : showSettings ? (
         <PriceSettings config={config} save={saveConfig} close={() => { setShowSettings(false); editingRef.current = false; }} wide={wide} />
       ) : (
@@ -1317,7 +1426,7 @@ export default function App() {
                 )}
                 {oversell && (
                   <div className="text-[11px] font-bold mt-1.5" style={{ color: "#f87171" }}>
-                    ⚠ Kun {stock} på lager — salget kan stadig gemmes, men lageret går i minus.
+                    ⚠ Kun {stock} på lager — handlen kan ikke gemmes med dette antal.
                   </div>
                 )}
               </div>
@@ -2600,7 +2709,7 @@ function CraftCheckModal({ matches, onDecide }) {
 }
 
 /* ── Salgs-dagbog ── */
-function SalesLog({ sales, cur, wide, onClear, onDelete, role }) {
+function SalesLog({ sales, cur, wide, onClear, onReverse, role }) {
   const [period, setPeriod] = useState("dag"); // dag | uge | måned | alt
   const dk = wide;
   const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
@@ -2673,12 +2782,127 @@ function SalesLog({ sales, cur, wide, onClear, onDelete, role }) {
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="font-black tabular-nums" style={{ color: isGain ? (dk ? "#4ade80" : GREEN) : (dk ? "#f87171" : RED) }}>{amountPrefix}{fmt(netAmount)} {cur}</span>
-                  <button onClick={() => onDelete(t.id)} className="p-1" style={{ color: dk ? "#666" : "#d6d3d1" }}><Trash2 size={14} /></button>
+                  <button onClick={() => onReverse(t)}
+                    className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-bold"
+                    style={{ color: RED, background: dk ? "rgba(192,57,43,.15)" : "#fdf0ef" }}>
+                    <RotateCcw size={13} /> Fortryd
+                  </button>
                 </div>
               </div>
               <div className="text-xs mt-1" style={{ color: sub }}>
                 {t.custId ? `ID ${t.custId} · ` : ""}{t.lines.map((l) => `${l.qty}× ${l.name}`).join(" · ")}
                 {t.points ? ` · +${t.points}p` : ""}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ── Top-varer efter avance (kun læsning) ──
+   Avancen pr. solgt vare (salgspris minus kostpris) lagt sammen pr. varenavn, for
+   SALG-handler ("Sælg til kunde") i den valgte periode. Historiske salg gemmer ikke
+   kostprisen fra dengang handlen blev lavet (kun "sum"/"sellSum" på linjen) — derfor
+   bruges den NUVÆRENDE kostpris fra prislisten som estimat (se disclaimeren i UI'en).
+   Skranke-varer indgår ikke (de er ikke en del af det almindelige materiale-sortiment). */
+function TopMarginItems({ sales, config, cur, wide }) {
+  const [period, setPeriod] = useState("dag"); // dag | uge | måned | alt — samme som Dagbog
+  const dk = wide;
+  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const sub = dk ? "#9ca3af" : "#78716c";
+
+  const now = Date.now();
+  const cutoff = period === "dag" ? new Date().setHours(0, 0, 0, 0)
+    : period === "uge" ? now - 7 * 86400000
+    : period === "måned" ? now - 30 * 86400000
+    : 0;
+  const inPeriod = sales.filter((t) => t.at >= cutoff && t.type === "sell");
+
+  const agg = {};
+  inPeriod.forEach((t) => {
+    (t.lines || []).forEach((l) => {
+      if (l.isCounter) return;
+      const key = l.name;
+      if (!agg[key]) agg[key] = { name: key, qty: 0, revenue: 0, cost: 0 };
+      const mat = findMaterialByName(config.materials, key);
+      const unitCost = mat ? (mat.price || 0) : 0;
+      agg[key].qty += l.qty || 0;
+      agg[key].revenue += l.sum || 0;
+      agg[key].cost += unitCost * (l.qty || 0);
+    });
+  });
+  const rows = Object.values(agg)
+    .map((r) => ({ ...r, margin: r.revenue - r.cost }))
+    .sort((a, b) => b.margin - a.margin);
+
+  return (
+    <div className={"pb-10 " + (dk ? "px-8 pt-6 mx-auto text-white" : "px-3 pt-3")} style={dk ? { maxWidth: 900 } : {}}>
+      <div className="flex rounded-lg overflow-hidden border text-xs font-black mb-3" style={{ borderColor: dk ? "#3a3a3a" : "#d6d3d1" }}>
+        {[["dag", "I dag"], ["uge", "7 dage"], ["måned", "30 dage"], ["alt", "Alt"]].map(([v, l]) => (
+          <button key={v} onClick={() => setPeriod(v)} className="flex-1 py-2"
+            style={period === v ? { background: GOLD, color: INK } : { background: dk ? PANEL : "white", color: sub }}>{l}</button>
+        ))}
+      </div>
+      <div className="text-xs font-black uppercase tracking-wider mb-2" style={{ color: dk ? GOLD : BLUE }}>Top-varer efter avance</div>
+      <div className="text-[11px] mb-3 px-0.5" style={{ color: sub }}>
+        Avancen er beregnet ud fra de NUVÆRENDE kostpriser i prislisten (historiske salg gemmer ikke kostprisen fra dengang) — tallene er derfor et estimat, ikke et regnskabsmæssigt facit.
+      </div>
+      {rows.length === 0 && <div className="text-sm py-6 text-center" style={{ color: sub }}>Ingen salg i denne periode.</div>}
+      <div className="space-y-2">
+        {rows.map((r, i) => (
+          <div key={r.name} className="rounded-xl border p-3 flex items-center justify-between gap-2" style={box}>
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-6 text-center font-black text-xs shrink-0" style={{ color: dk ? "#666" : "#a8a29e" }}>{i + 1}</div>
+              <div className="min-w-0">
+                <div className="font-bold truncate" style={{ color: dk ? "white" : INK }}>{r.name}</div>
+                <div className="text-[11px]" style={{ color: sub }}>{fmt(r.qty)} stk. solgt · omsætning {fmt(r.revenue)} {cur}</div>
+              </div>
+            </div>
+            <div className="text-right shrink-0">
+              <div className="font-black tabular-nums" style={{ color: r.margin >= 0 ? (dk ? "#4ade80" : GREEN) : (dk ? "#f87171" : RED) }}>{fmt(r.margin)} {cur}</div>
+              <div className="text-[10px]" style={{ color: sub }}>avance (est.)</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── Stamkunder (kun læsning) ──
+   Top-liste over kunder efter samlet beløb (buildCustomers sorterer allerede sådan),
+   med antal handler og point pr. kunde. Genbruger visningsdesignet fra Kunder-siden
+   (samme kort-stil, niveau-badge osv.), men er en ren visning uden nogen handlinger,
+   der kan ændre data (ingen slet-knap, ingen redigering). */
+function TopCustomers({ sales, config, cur, wide }) {
+  const dk = wide;
+  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const sub = dk ? "#9ca3af" : "#78716c";
+  const custs = buildCustomers(sales);
+  const wrap = "pb-10 " + (dk ? "px-8 pt-6 mx-auto " : "px-3 pt-3 ") + (dk ? "text-white" : "");
+  const wrapStyle = dk ? { maxWidth: PAGE_MAX } : {};
+
+  return (
+    <div className={wrap} style={wrapStyle}>
+      <div className="text-xs font-black uppercase tracking-wider mb-3" style={{ color: dk ? GOLD : BLUE }}>Stamkunder — top efter samlet beløb</div>
+      {custs.length === 0 && <div className="text-sm py-6 text-center" style={{ color: sub }}>Ingen kunder endnu.</div>}
+      <div className="space-y-2">
+        {custs.map((c, i) => {
+          const { cur: lvl } = levelFor(c.points, config.levels);
+          return (
+            <div key={c.id} className="w-full rounded-xl border p-3 flex items-center justify-between gap-2" style={box}>
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-6 text-center font-black text-xs shrink-0" style={{ color: dk ? "#666" : "#a8a29e" }}>{i + 1}</div>
+                <div className="min-w-0">
+                  <div className="font-black truncate" style={{ color: dk ? "white" : INK }}>{c.id}</div>
+                  <div className="text-[11px]" style={{ color: sub }}>{c.trades.length} handler · {c.points} point</div>
+                </div>
+              </div>
+              <div className="flex items-center gap-3 shrink-0">
+                <span className="px-2.5 py-1 rounded-full text-[11px] font-black" style={{ background: dk ? "rgba(245,179,1,.15)" : "#fdf3e7", color: dk ? GOLD : GOLD_D }}>{lvl.name}</span>
+                <span className="font-black tabular-nums" style={{ color: dk ? GOLD : INK }}>{fmt(c.total)} {cur}</span>
               </div>
             </div>
           );
