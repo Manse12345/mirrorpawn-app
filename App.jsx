@@ -719,6 +719,15 @@ export default function App() {
   const [activeCat, setActiveCat] = useState("Alle");
   const [savedFlash, setSavedFlash] = useState(false);
   const [craftError, setCraftError] = useState(""); // vist når craft-delen af et salg ikke kunne gennemføres (fx for få materialer)
+  // Sand mens en handel er ved at blive gemt (fra klik til hele commitTrade, inkl. de
+  // asynkrone DB-kald, er færdig) — bruges til at deaktivere "Gem"/"Færdig"-knapperne,
+  // så samme handel ikke kan sendes to gange ved dobbeltklik/dobbelt-tap.
+  const [savingTrade, setSavingTrade] = useState(false);
+  const [tradeError, setTradeError] = useState(""); // vist hvis selve databaseskrivningen i commitTrade fejler
+  const flashTradeError = (msg) => {
+    setTradeError(msg);
+    setTimeout(() => setTradeError((cur) => (cur === msg ? "" : cur)), 8000);
+  };
   const [custId, setCustId] = useState("");
   const [openCust, setOpenCust] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -1059,10 +1068,12 @@ export default function App() {
   const cats = ["Alle", ...(config.categories || ["Materialer"])];
 
   // Bogfører en handel: gemmer den i databasen, justerer lager og kasse, trækker evt.
-  // valgte craft-materialer (kun relevant ved salg), og logger til Discord. Alt sker
-  // samlet herfra — enten alt sammen, eller (ved en fejl undervejs) intet af det bliver
-  // synligt lokalt, fordi de lokale state-opdateringer sker FØR de asynkrone DB-kald.
-  const commitTrade = (trade, craftChoices) => {
+  // valgte craft-materialer (kun relevant ved salg), og logger til Discord. De lokale
+  // state-opdateringer (optimistisk UI) sker FØRST, synkront — men funktionen er
+  // async og venter på de faktiske DB-kald, så kaldere (beginSaveTrade/finalizeTrade)
+  // kan vente på HELE forløbet og vide, om det reelt lykkedes, før "gemmer"-
+  // tilstanden slukkes igen (se savingTrade).
+  const commitTrade = async (trade, craftChoices) => {
     // beregn evt. niveau-skift FØR vs EFTER for kunden (kun ved køb — points gives ikke ved salg)
     const custIdVal = trade.custId;
     let prevPoints = 0;
@@ -1132,25 +1143,31 @@ export default function App() {
     if (navigator.vibrate) navigator.vibrate(40);
 
     // skriv til databasen + log hændelser til Discord
-    (async () => {
-      try {
-        // cashDelta gemmes MED handlen (se 8-edit-sale.sql) så en senere "Ret beløb"
-        // eller "Fortryd handel" altid kan tage udgangspunkt i, hvad denne handel
-        // FAKTISK flyttede kassen med — uden at skulle genberegne det fra varelinjerne.
-        await insertSale({ ...trade, cashDelta });
-        await Promise.all(stockLines.map((l) => adjustInventory(l.id, invDelta * l.qty)));
-        await adjustCash(cashDelta);
-        if (craftOk) {
-          // sekventielt (ikke parallelt), så delte råmaterialer mellem to opskrifter
-          // tjekkes korrekt af craft_item i databasen for hvert kald
-          for (const job of craftJobs) {
-            await craftItem(job.consumed, job.outputMatId, job.qty);
-          }
+    try {
+      // cashDelta gemmes MED handlen (se 8-edit-sale.sql) så en senere "Ret beløb"
+      // eller "Fortryd handel" altid kan tage udgangspunkt i, hvad denne handel
+      // FAKTISK flyttede kassen med — uden at skulle genberegne det fra varelinjerne.
+      await insertSale({ ...trade, cashDelta });
+      await Promise.all(stockLines.map((l) => adjustInventory(l.id, invDelta * l.qty)));
+      await adjustCash(cashDelta);
+      if (craftOk) {
+        // sekventielt (ikke parallelt), så delte råmaterialer mellem to opskrifter
+        // tjekkes korrekt af craft_item i databasen for hvert kald
+        for (const job of craftJobs) {
+          await craftItem(job.consumed, job.outputMatId, job.qty);
         }
-        if (custIdVal && wasNew) await logEvent("newcustomer", { custId: custIdVal });
-        if (custIdVal && afterLvl !== beforeLvl) await logEvent("levelup", { custId: custIdVal, level: afterLvl, points: prevPoints + trade.points });
-      } catch (e) {}
-    })();
+      }
+      if (custIdVal && wasNew) await logEvent("newcustomer", { custId: custIdVal });
+      if (custIdVal && afterLvl !== beforeLvl) await logEvent("levelup", { custId: custIdVal, level: afterLvl, points: prevPoints + trade.points });
+    } catch (e) {
+      // Databaseskrivningen fejlede reelt (netværk, midlertidig afbrydelse m.m.) — den
+      // lokale skærm viser stadig handlen som gemt (optimistisk UI ovenfor), men den er
+      // IKKE sikkert gemt i databasen. Vis det tydeligt i stedet for at svælge fejlen
+      // stille, så personalet ved at kigge efter/prøve igen, i stedet for en falsk tryghed.
+      flashTradeError(
+        "⚠ Handlen kunne IKKE gemmes i databasen (netværksfejl eller lignende) — lager/kasse på denne enhed kan være ude af trit med resten. Genindlæs siden og tjek Dagbogen; gennemfør handlen igen, hvis den ikke findes der."
+      );
+    }
   };
 
   // Tryk på "Gem salg & kvittering" / "Gem handel & kvittering". Bygger handlen ud fra
@@ -1158,7 +1175,7 @@ export default function App() {
   // visning bagefter). SALG bogføres INTET endnu — handlen afventer i stedet "Craftede
   // du disse?" (hvis relevant) og bekræftelse i kvitteringen (finalizeTrade/cancelTrade).
   const beginSaveTrade = () => {
-    if (lines.length === 0) return;
+    if (lines.length === 0 || savingTrade) return;
     saveCustPhoneNow();
     const pts = tradeMode === "buy" ? Math.floor(total / (config.pointsPer || 1000)) : 0;
     const trade = {
@@ -1185,7 +1202,8 @@ export default function App() {
     }
 
     if (tradeMode === "buy") {
-      commitTrade(trade, {});
+      setSavingTrade(true);
+      commitTrade(trade, {}).finally(() => setSavingTrade(false));
       setReceipt(trade);
       setCart({}); setCustId(""); setCounterItems([]); setShowCounterForm(false);
       return;
@@ -1220,13 +1238,16 @@ export default function App() {
     setPendingCraftChoices({});
     setReceipt(null);
     setCraftCheck(null);
+    setSavingTrade(false);
   };
 
   // Kvitteringens "Færdig" (kun for salg, der afventer bekræftelse): bogfør hele
   // handlen nu — salg, lager, kasse og craft-materialer samlet.
   const finalizeTrade = () => {
-    if (!pendingTrade) return;
-    commitTrade(pendingTrade, pendingCraftChoices);
+    if (!pendingTrade || savingTrade) return;
+    const trade = pendingTrade, craftChoices = pendingCraftChoices;
+    setSavingTrade(true);
+    commitTrade(trade, craftChoices).finally(() => setSavingTrade(false));
     setCart({}); setCustId("");
     setReceipt(null); setPendingTrade(null); setPendingCraftChoices({});
   };
@@ -1243,6 +1264,11 @@ export default function App() {
         <button onClick={() => setCraftError("")}
           className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full font-bold text-sm shadow-lg text-left"
           style={{ background: RED, color: "white", maxWidth: 420 }}>⚠ {craftError}</button>
+      )}
+      {tradeError && (
+        <button onClick={() => setTradeError("")}
+          className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-full font-bold text-sm shadow-lg text-left"
+          style={{ background: RED, color: "white", maxWidth: 420 }}>{tradeError}</button>
       )}
       {rowActionErr && (
         <button onClick={() => setRowActionErr("")}
@@ -1631,10 +1657,10 @@ export default function App() {
                   )}
                   {lines.length > 0 && (
                     <div className="mt-2 space-y-2">
-                      <button onClick={() => beginSaveTrade()}
-                        className="w-full flex items-center justify-center gap-1.5 px-4 py-3 rounded-xl font-black text-base"
+                      <button onClick={() => beginSaveTrade()} disabled={savingTrade}
+                        className="w-full flex items-center justify-center gap-1.5 px-4 py-3 rounded-xl font-black text-base disabled:opacity-50"
                         style={{ background: tradeMode === "sell" ? GREEN : GOLD, color: tradeMode === "sell" ? "white" : INK }}>
-                        <Save size={18} /> {tradeMode === "sell" ? "Gem salg & kvittering" : "Gem handel & kvittering"}
+                        <Save size={18} /> {savingTrade ? "Gemmer…" : (tradeMode === "sell" ? "Gem salg & kvittering" : "Gem handel & kvittering")}
                       </button>
                       <button onClick={() => { setCart({}); setCounterItems([]); setShowCounterForm(false); }}
                         className="w-full flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl font-bold text-sm"
@@ -1651,7 +1677,7 @@ export default function App() {
       )}
 
       {receipt ? (
-        <ReceiptModal trade={receipt} config={config} pending={!!pendingTrade}
+        <ReceiptModal trade={receipt} config={config} pending={!!pendingTrade} saving={savingTrade}
           onConfirm={finalizeTrade} onCancel={cancelTrade} onClose={() => setReceipt(null)} />
       ) : craftCheck ? (
         <CraftCheckModal matches={craftCheck.matches} onDecide={handleCraftDecision} />
@@ -1694,9 +1720,9 @@ export default function App() {
               </div>
             </div>
             {lines.length > 0 && (
-              <button onClick={() => beginSaveTrade()}
-                className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl font-black text-white" style={{ background: INK }}>
-                <Save size={16} /> Gem
+              <button onClick={() => beginSaveTrade()} disabled={savingTrade}
+                className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl font-black text-white disabled:opacity-50" style={{ background: INK }}>
+                <Save size={16} /> {savingTrade ? "Gemmer…" : "Gem"}
               </button>
             )}
           </div>
@@ -2860,7 +2886,7 @@ function ScanTrayModal({ materials, onApply, onClose, calibrationMode }) {
 // handlen (onConfirm), og et ✕ i toppen annullerer den helt uden spor (onCancel).
 // pending=false (køb, der allerede er bogført med det samme): kvitteringen er bare en
 // visning, og "Færdig" lukker den blot (onClose) — som hidtil.
-function ReceiptModal({ trade, config, pending, onConfirm, onCancel, onClose }) {
+function ReceiptModal({ trade, config, pending, saving, onConfirm, onCancel, onClose }) {
   const cur = config.currency;
   const d = new Date(trade.at);
   return (
@@ -2915,7 +2941,10 @@ function ReceiptModal({ trade, config, pending, onConfirm, onCancel, onClose }) 
         </div>
         <div className="px-5 pb-4 flex gap-2">
           <div className="flex-1 text-[10px] text-stone-400 self-center">Screenshot og send til kunden.</div>
-          <button onClick={pending ? onConfirm : onClose} className="px-4 py-2.5 rounded-xl font-black text-white" style={{ background: INK }}>Færdig</button>
+          <button onClick={pending ? onConfirm : onClose} disabled={pending && saving}
+            className="px-4 py-2.5 rounded-xl font-black text-white disabled:opacity-50" style={{ background: INK }}>
+            {pending && saving ? "Gemmer…" : "Færdig"}
+          </button>
         </div>
       </div>
     </div>
