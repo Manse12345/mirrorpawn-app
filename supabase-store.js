@@ -318,4 +318,56 @@ export async function loadPublicPriceList() {
   return data || []; // [{ name, price, sell, in_stock, image_url, category }]
 }
 
+// ---- Crafting-opskrifter ----
+// Opskrifterne ligger i "recipes"-tabellen (se 9-crafting-recipes.sql) — IKKE
+// hardcodet i koden. Materialer refererer altid til en vare via dens ID (samme
+// ID som i "inventory"/config.materials), aldrig via navn — det er derfor
+// UI'en (RecipeManager i App.jsx) kun lader dig VÆLGE varer fra en dropdown i
+// stedet for at skrive navnet: en fejlstavning kan så aldrig knække "har jeg
+// nok på lager"-tjekket. Navnet gemmes kun som et visnings-fallback, hvis
+// varen senere skulle blive slettet.
+function mapRecipeRow(row) {
+  return {
+    id: row.id,
+    outputMaterialId: row.output_material_id,
+    outputName: row.output_name,
+    outputQty: +row.output_qty,
+    cat: row.cat,
+    time: +row.time_seconds,
+    mats: (row.materials || []).map((m) => ({ materialId: m.material_id, name: m.name, qty: +m.qty })),
+  };
+}
+function toRecipeRow(recipe) {
+  return {
+    output_material_id: recipe.outputMaterialId,
+    output_name: recipe.outputName,
+    output_qty: recipe.outputQty,
+    cat: recipe.cat,
+    time_seconds: recipe.time || 0,
+    materials: recipe.mats.map((m) => ({ material_id: m.materialId, name: m.name, qty: m.qty })),
+  };
+}
+export async function loadRecipes() {
+  const { data, error } = await supabase.from("recipes").select("*").order("cat").order("output_name");
+  if (error) throw error;
+  return (data || []).map(mapRecipeRow);
+}
+export async function createRecipe(recipe) {
+  const { data, error } = await supabase.from("recipes").insert(toRecipeRow(recipe)).select().single();
+  if (error) throw error;
+  return mapRecipeRow(data);
+}
+export async function updateRecipe(id, recipe) {
+  const { data, error } = await supabase
+    .from("recipes")
+    .update({ ...toRecipeRow(recipe), updated_at: new Date().toISOString() })
+    .eq("id", id).select().single();
+  if (error) throw error;
+  return mapRecipeRow(data);
+}
+export async function deleteRecipe(id) {
+  const { error } = await supabase.from("recipes").delete().eq("id", id);
+  if (error) throw error;
+}
+
 export const supabaseReady = true;

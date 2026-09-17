@@ -11,6 +11,7 @@ import {
   deleteCustomer, craftItem, reverseSale, updateSaleCustomer, editSaleAmount,
   loadLeaderboardSettings, saveLeaderboardSettings,
   loadCustomerPhones, saveCustomerPhone,
+  loadRecipes, createRecipe, updateRecipe, deleteRecipe,
 } from "./supabase-store.js";
 
 /* ── Pawnshop-beregner ────────────────────────────────────────────
@@ -68,32 +69,6 @@ const DEFAULT_CONFIG = {
     { id: "m30", name: "12.GA", price: 400, sell: 1200, unit: "stk.", cat: "Våben & Udstyr" },
   ]
 };
-
-// ── Crafting-opskrifter (arbejdsbænk i spillet). Materialer matches på NAVN
-//    mod config.materials, så navnene her skal matche spillet 1-til-1. ──
-const RECIPES = [
-  { name: "Luksus Våben Kit", time: 10, cat: "Våben & Udstyr", mats: [{ name: "Guld spraydåse", qty: 5 }, { name: "Plastik", qty: 10 }] },
-  { name: "Skudsikker vest", time: 15, cat: "Våben & Udstyr", mats: [{ name: "Plastik", qty: 25 }, { name: "Aluminium", qty: 25 }, { name: "Glas", qty: 25 }, { name: "Stål", qty: 50 }, { name: "Tekstil", qty: 100 }] },
-  { name: "Extended Pistol Clip", time: 10, cat: "Våben & Udstyr", mats: [{ name: "Aluminium", qty: 75 }, { name: "Gummi", qty: 75 }, { name: "Metalskrot", qty: 100 }] },
-  { name: "Lyddæmper", time: 10, cat: "Våben & Udstyr", mats: [{ name: "Stål", qty: 75 }, { name: "Aluminium", qty: 100 }, { name: "Plastik", qty: 100 }] },
-  { name: "Knojern", time: 10, cat: "Våben & Udstyr", mats: [{ name: "Metalskrot", qty: 10 }, { name: "Aluminium", qty: 15 }] },
-  { name: "Dagger", time: 10, cat: "Våben & Udstyr", mats: [{ name: "Aluminium", qty: 10 }, { name: "Metalskrot", qty: 15 }, { name: "Træ", qty: 15 }] },
-  { name: "Machete", time: 10, cat: "Våben & Udstyr", mats: [{ name: "Metalskrot", qty: 10 }, { name: "Aluminium", qty: 15 }, { name: "Træ", qty: 15 }] },
-
-  { name: "Låsesæt", time: 1, cat: "Værktøj & Andet", mats: [{ name: "Aluminium", qty: 2 }] },
-  { name: "Vinkelsliber", time: 15, cat: "Værktøj & Andet", mats: [{ name: "Glas", qty: 10 }, { name: "Gummi", qty: 10 }, { name: "Plastik", qty: 10 }, { name: "Metalskrot", qty: 20 }] },
-  { name: "Skruetrækkersæt", time: 10, cat: "Værktøj & Andet", mats: [{ name: "Gummi", qty: 10 }, { name: "Plastik", qty: 15 }, { name: "Metalskrot", qty: 30 }] },
-  { name: "Nummerplade", time: 30, cat: "Værktøj & Andet", mats: [{ name: "Plastik", qty: 30 }, { name: "Metalskrot", qty: 30 }] },
-  { name: "Sportstaske", time: 10, cat: "Værktøj & Andet", mats: [{ name: "Gummi", qty: 15 }, { name: "Tekstil", qty: 85 }] },
-  { name: "Våbenrensesæt", time: 5, cat: "Værktøj & Andet", mats: [{ name: "Raffineret Metal", qty: 20 }, { name: "Raffineret Kobber", qty: 20 }] },
-  { name: "Bandage", time: 5, cat: "Værktøj & Andet", mats: [{ name: "Tekstil", qty: 15 }] },
-
-  { name: "Elektronik", time: 2.5, cat: "Elektronik", mats: [{ name: "Kabler", qty: 1 }] },
-  { name: "Xeltrix Enhed", time: 5, cat: "Elektronik", mats: [{ name: "Kabler", qty: 1 }, { name: "Glas", qty: 10 }, { name: "Kobber", qty: 10 }, { name: "Elektronik", qty: 10 }] },
-  { name: "KryptaNode Modul", time: 5, cat: "Elektronik", mats: [{ name: "Kabler", qty: 1 }, { name: "Glas", qty: 10 }, { name: "Kobber", qty: 10 }, { name: "Elektronik", qty: 10 }] },
-  { name: "sFruit S420", time: 15, cat: "Elektronik", mats: [{ name: "Bagpanel", qty: 1 }, { name: "Kobber", qty: 10 }, { name: "Glas", qty: 25 }, { name: "Elektronik", qty: 60 }] },
-  { name: "Kabler", time: 5, cat: "Elektronik", mats: [{ name: "Dekrypteringsenhed", qty: 1 }] },
-];
 
 const fmt = (n) => (Math.round(n) || 0).toLocaleString("da-DK");
 const PAGE_MAX = 1100; // max-bredde for indholdssider på brede skærme (Kunder/Ansatte/Rediger)
@@ -709,6 +684,12 @@ export default function App() {
   const loadLeaderboardFn = async () => { try { setLbSettings(await loadLeaderboardSettings()); } catch (e) {} };
   const [customerPhones, setCustomerPhones] = useState({}); // cust_id -> phone
   const loadCustomerPhonesFn = async () => { try { setCustomerPhones(await loadCustomerPhones()); } catch (e) {} };
+  // Crafting-opskrifter — hentes fra "recipes"-tabellen (se 9-crafting-recipes.sql),
+  // ikke længere hardcodet. Alle roller kan læse dem (bruges af Crafting-siden for
+  // alle); kun ejer/manager kan oprette/rette/slette (RecipeManager, tjekket i UI'en
+  // OG i databasens RLS-policies).
+  const [recipes, setRecipes] = useState([]);
+  const loadRecipesFn = async () => { try { setRecipes(await loadRecipes()); } catch (e) {} };
   // Telefon-felt ved KUNDE-ID i Kassen. Slår gemt nummer op, når kunde-id'et ÆNDRES
   // (ikke når customerPhones i baggrunden genindlæses — ellers ville et pending baggrunds-
   // poll kunne overskrive noget, kassøren lige er i gang med at rette).
@@ -879,38 +860,28 @@ export default function App() {
     try { await sbSetMaterialImage(materialId, url); } catch (e) {}
   };
 
-  // Crafter "qty" stk. af en opskrift: opretter evt. den færdige vare i materialelisten
-  // (hvis den ikke findes i forvejen, matchet på navn), og trækker/lægger til lageret
-  // atomisk via craft_item i databasen. Kaster en fejl (som Crafting-visningen viser),
-  // hvis der ikke længere er nok af et materiale.
+  // Crafter "qty" gange en opskrift: trækker materialerne (matchet på deres vare-ID,
+  // valgt via dropdown i RecipeManager — aldrig navn) og lægger qty × recipe.outputQty
+  // stk. af færdigvaren til, atomisk via craft_item i databasen. Kaster en fejl (som
+  // Crafting-visningen viser), hvis der ikke længere er nok af et materiale.
   const handleCraft = async (recipe, qty) => {
     qty = Math.max(1, Math.floor(+qty) || 0);
     if (qty <= 0) throw new Error("Ugyldigt antal.");
 
-    let nextConfig = config;
-    let outputMat = findMaterialByName(config.materials, recipe.name);
-    if (!outputMat) {
-      const catMatch = (config.categories || []).find((c) => c.toLowerCase() === (recipe.cat || "").toLowerCase());
-      const cat = catMatch || (config.categories || [])[0] || "Andet";
-      outputMat = { id: "m" + Date.now(), name: recipe.name, price: 0, sell: 0, unit: "stk.", cat };
-      nextConfig = { ...config, materials: [...config.materials, outputMat] };
-      await saveConfig(nextConfig);
-    }
-
-    const consumed = recipe.mats.map((rm) => {
-      const mat = findMaterialByName(nextConfig.materials, rm.name);
-      if (!mat) throw new Error(`Ukendt materiale: ${rm.name}`);
-      return { material_id: mat.id, name: mat.name, qty: rm.qty * qty };
-    });
+    const consumed = recipe.mats.map((rm) => ({ material_id: rm.materialId, qty: rm.qty * qty }));
+    const outputQty = qty * (recipe.outputQty || 1);
 
     // hurtigt klient-tjek for en pæn fejlmelding — den autoritative kontrol sker atomisk i databasen
     for (const c of consumed) {
       const have = inventory[c.material_id] || 0;
-      if (have < c.qty) throw new Error(`Ikke nok ${c.name} på lager længere — har ${have}, kræver ${c.qty}.`);
+      if (have < c.qty) {
+        const matName = (recipe.mats.find((m) => m.materialId === c.material_id) || {}).name || c.material_id;
+        throw new Error(`Ikke nok ${matName} på lager længere — har ${have}, kræver ${c.qty}.`);
+      }
     }
 
     try {
-      await craftItem(consumed.map(({ material_id, qty }) => ({ material_id, qty })), outputMat.id, qty);
+      await craftItem(consumed, recipe.outputMaterialId, outputQty);
     } catch (e) {
       throw new Error("Lageret nåede at ændre sig, inden craftet blev gennemført (en kollega har måske solgt materialer i mellemtiden). Prøv igen.");
     }
@@ -918,20 +889,27 @@ export default function App() {
     setInventory((prev) => {
       const next = { ...prev };
       consumed.forEach((c) => { next[c.material_id] = (next[c.material_id] || 0) - c.qty; });
-      next[outputMat.id] = (next[outputMat.id] || 0) + qty;
+      next[recipe.outputMaterialId] = (next[recipe.outputMaterialId] || 0) + outputQty;
       return next;
     });
   };
 
+  // Opret/rediger/slet-håndtag til RecipeManager (kun ejer/manager — se canManageStore).
+  // Genindlæser hele listen efter hvert skriv, så alle CRUD-handlinger altid bygger på
+  // den nyeste tilstand og andre indloggede kollegers ændringer ikke overskrives.
+  const handleCreateRecipe = async (recipe) => { await createRecipe(recipe); await loadRecipesFn(); };
+  const handleUpdateRecipe = async (id, recipe) => { await updateRecipe(id, recipe); await loadRecipesFn(); };
+  const handleDeleteRecipe = async (id) => { await deleteRecipe(id); await loadRecipesFn(); };
+
   const editingRef = useRef(false);
-  useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); } }, [profile]);
+  useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); loadRecipesFn(); } }, [profile]);
   useEffect(() => {
     if (!profile) return;
     const poll = setInterval(() => {
       // hent nye priser i baggrunden — men aldrig mens ejeren redigerer
-      if (!editingRef.current && document.visibilityState === "visible") { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); }
+      if (!editingRef.current && document.visibilityState === "visible") { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); loadRecipesFn(); }
     }, 12000);
-    const onVis = () => { if (document.visibilityState === "visible" && !editingRef.current) { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); } };
+    const onVis = () => { if (document.visibilityState === "visible" && !editingRef.current) { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); loadRecipesFn(); } };
     document.addEventListener("visibilitychange", onVis);
     return () => { clearInterval(poll); document.removeEventListener("visibilitychange", onVis); };
   }, [profile]);
@@ -1050,20 +1028,14 @@ export default function App() {
     const craftJobs = []; // [{ outputMatId, qty, consumed: [{ material_id, qty }] }]
     const craftNeedByMat = {}; // råmateriale-id -> samlet behov på tværs af opskrifterne
     let craftLookupFailed = false;
-    Object.entries(craftChoices || {}).forEach(([recipeName, rawQty]) => {
+    Object.entries(craftChoices || {}).forEach(([recipeId, rawQty]) => {
       const qty = Math.max(0, Math.floor(+rawQty) || 0);
       if (qty <= 0) return;
-      const recipe = findRecipeByName(recipeName);
-      const outputMat = recipe && findMaterialByName(config.materials, recipe.name);
-      if (!recipe || !outputMat) { craftLookupFailed = true; return; }
-      const consumed = [];
-      recipe.mats.forEach((rm) => {
-        const mat = findMaterialByName(config.materials, rm.name);
-        if (!mat) { craftLookupFailed = true; return; }
-        consumed.push({ material_id: mat.id, qty: rm.qty * qty });
-        craftNeedByMat[mat.id] = (craftNeedByMat[mat.id] || 0) + rm.qty * qty;
-      });
-      craftJobs.push({ outputMatId: outputMat.id, qty, consumed });
+      const recipe = recipes.find((r) => String(r.id) === String(recipeId));
+      if (!recipe) { craftLookupFailed = true; return; }
+      const consumed = recipe.mats.map((rm) => ({ material_id: rm.materialId, qty: rm.qty * qty }));
+      consumed.forEach((c) => { craftNeedByMat[c.material_id] = (craftNeedByMat[c.material_id] || 0) + c.qty; });
+      craftJobs.push({ outputMatId: recipe.outputMaterialId, qty: qty * (recipe.outputQty || 1), consumed });
     });
     // Tjek FØRST at der er nok af ALLE råmaterialer til ALLE craft-valg tilsammen, før
     // noget som helst udføres — hvis ikke, springes craft-delen helt over (men resten af
@@ -1155,12 +1127,14 @@ export default function App() {
     }
 
     // Salg: intet bogført endnu. "Craftede du disse?" vises kun for linjer, der matcher
-    // en af de 19 crafting-opskrifter (navnematch, ikke case/mellemrum-følsomt).
+    // en opskrifts færdigvare — matchet på vare-ID (samme robuste match som craftet
+    // selv bruger), ikke på navn.
     setPendingTrade(trade);
     setPendingCraftChoices({});
     const matches = trade.lines
-      .map((l) => ({ recipe: findRecipeByName(l.name), soldQty: l.qty }))
-      .filter((m) => m.recipe);
+      .map((l) => ({ recipe: recipes.find((r) => r.outputMaterialId === l.id), soldQty: l.qty }))
+      .filter((m) => m.recipe)
+      .map((m) => ({ ...m, name: (materials.find((mm) => mm.id === m.recipe.outputMaterialId) || {}).name || m.recipe.outputName }));
     if (matches.length > 0) { setCraftCheck({ matches }); return; }
     setReceipt(trade);
   };
@@ -1321,7 +1295,9 @@ export default function App() {
             try { await setCash(amount); } catch (e) {}
           }} />
       ) : view === "crafting" && !showSettings ? (
-        <Crafting materials={materials} inventory={inventory} wide={wide} onCraft={handleCraft} />
+        <Crafting materials={materials} inventory={inventory} wide={wide} onCraft={handleCraft}
+          recipes={recipes} canManageStore={canManageStore}
+          onCreateRecipe={handleCreateRecipe} onUpdateRecipe={handleUpdateRecipe} onDeleteRecipe={handleDeleteRecipe} />
       ) : view === "ansatte" && !showSettings && isOwner ? (
         <StaffAdmin staffList={staffList} refresh={refreshStaff} myId={profile.id} wide={wide} />
       ) : view === "leaderboard" && !showSettings && canManageStore ? (
@@ -1998,58 +1974,69 @@ function findMaterialByName(materials, name) {
   const target = (name || "").trim().toLowerCase();
   return materials.find((m) => (m.name || "").trim().toLowerCase() === target) || null;
 }
-// Samme insensitive navnematch som ovenfor, men mod opskriftslisten — bruges til at
-// opdage om en solgt vare er en af de 19 craftbare ting (fx til "craftede du disse?").
-function findRecipeByName(name) {
-  const target = (name || "").trim().toLowerCase();
-  return RECIPES.find((r) => r.name.trim().toLowerCase() === target) || null;
-}
-
-function Crafting({ materials, inventory, wide, onCraft }) {
+function Crafting({ materials, inventory, wide, onCraft, recipes, canManageStore, onCreateRecipe, onUpdateRecipe, onDeleteRecipe }) {
   const dk = wide;
   const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
   const wrap = "pb-10 " + (dk ? "px-8 pt-6 mx-auto " : "px-3 pt-3 ") + (dk ? "text-white" : "");
   const wrapStyle = dk ? { maxWidth: PAGE_MAX } : {};
-  const cats = [...new Set(RECIPES.map((r) => r.cat))];
+  const cats = [...new Set(recipes.map((r) => r.cat))];
 
   const [qtyByRecipe, setQtyByRecipe] = useState({});
   const [busyRecipe, setBusyRecipe] = useState(null);
-  const [msgByRecipe, setMsgByRecipe] = useState({}); // recipe.name -> { type: "ok"|"err", text }
+  const [msgByRecipe, setMsgByRecipe] = useState({}); // recipe.id -> { type: "ok"|"err", text }
+  const [showManager, setShowManager] = useState(false);
 
-  const doCraft = async (r, rows, maxTotal) => {
-    const qty = Math.min(Math.max(1, Math.floor(+qtyByRecipe[r.name] || 1)), maxTotal);
-    const matsStr = rows.map((row) => `${row.req.qty * qty}× ${row.mat.name}`).join(", ");
+  const doCraft = async (r, rows, maxTotal, displayName) => {
+    const qty = Math.min(Math.max(1, Math.floor(+qtyByRecipe[r.id] || 1)), maxTotal);
+    const matsStr = rows.map((row) => `${row.req.qty * qty}× ${row.mat ? row.mat.name : row.req.name}`).join(", ");
+    const totalOut = qty * (r.outputQty || 1);
     const confirmed = window.confirm(
-      `Craft ${qty}× ${r.name}? Dette trækker ${matsStr} fra lageret og lægger ${qty}× ${r.name} til.`
+      `Craft ${qty}× ${displayName}? Dette trækker ${matsStr} fra lageret og lægger ${totalOut}× ${displayName} til.`
     );
     if (!confirmed) return;
 
-    setBusyRecipe(r.name);
-    setMsgByRecipe((prev) => ({ ...prev, [r.name]: null }));
+    setBusyRecipe(r.id);
+    setMsgByRecipe((prev) => ({ ...prev, [r.id]: null }));
     try {
       await onCraft(r, qty);
-      setMsgByRecipe((prev) => ({ ...prev, [r.name]: { type: "ok", text: `✓ Craftede ${qty}× ${r.name}` } }));
+      setMsgByRecipe((prev) => ({ ...prev, [r.id]: { type: "ok", text: `✓ Craftede ${totalOut}× ${displayName}` } }));
     } catch (e) {
-      setMsgByRecipe((prev) => ({ ...prev, [r.name]: { type: "err", text: e.message || "Craft fejlede." } }));
+      setMsgByRecipe((prev) => ({ ...prev, [r.id]: { type: "err", text: e.message || "Craft fejlede." } }));
     } finally {
       setBusyRecipe(null);
-      setTimeout(() => setMsgByRecipe((prev) => ({ ...prev, [r.name]: null })), 5000);
+      setTimeout(() => setMsgByRecipe((prev) => ({ ...prev, [r.id]: null })), 5000);
     }
   };
 
   return (
     <div className={wrap} style={wrapStyle}>
-      <div className="text-xs mb-4" style={{ color: sub }}>
-        Viser om I har nok materialer på lager til hver opskrift. Tryk "Craft" for at trække materialerne fra det delte lager og lægge den færdige vare til.
+      <div className="text-xs mb-4 flex items-start justify-between gap-3">
+        <div style={{ color: sub }}>
+          Viser om I har nok materialer på lager til hver opskrift. Tryk "Craft" for at trække materialerne fra det delte lager og lægge den færdige vare til.
+        </div>
+        {canManageStore && (
+          <button onClick={() => setShowManager((v) => !v)}
+            className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-black text-[11px]"
+            style={{ background: showManager ? GOLD : "rgba(245,179,1,.15)", color: showManager ? INK : (dk ? GOLD : BLUE) }}>
+            <Pencil size={12} /> {showManager ? "Luk opskriftsredigering" : "Administrer opskrifter"}
+          </button>
+        )}
       </div>
+
+      {canManageStore && showManager && (
+        <RecipeManager materials={materials} recipes={recipes} wide={wide}
+          onCreate={onCreateRecipe} onUpdate={onUpdateRecipe} onDelete={onDeleteRecipe} />
+      )}
+
       {cats.map((cat) => (
         <div key={cat} className="mb-5">
           <div className="text-xs font-black uppercase tracking-widest mb-2" style={{ color: dk ? GOLD : BLUE }}>{cat}</div>
           <div className={wide ? "grid gap-3" : "space-y-2"} style={wide ? { gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))" } : {}}>
-            {RECIPES.filter((r) => r.cat === cat).map((r) => {
+            {recipes.filter((r) => r.cat === cat).map((r) => {
+              const displayName = (materials.find((m) => m.id === r.outputMaterialId) || {}).name || r.outputName;
               const rows = r.mats.map((req) => {
-                const mat = findMaterialByName(materials, req.name);
+                const mat = materials.find((m) => m.id === req.materialId);
                 if (!mat) return { req, mat: null, unknown: true, ok: false, stock: 0, maxCraft: 0 };
                 const stock = inventory[mat.id] || 0;
                 const ok = stock >= req.qty;
@@ -2067,11 +2054,11 @@ function Crafting({ materials, inventory, wide, onCraft }) {
                   ? (dk ? "rgba(230,126,34,.08)" : "#fdf3e7")
                   : (dk ? "rgba(192,57,43,.08)" : "#fdf0ef");
               return (
-                <div key={r.name} className="rounded-xl border p-3" style={{ ...box, background: cardBg, borderColor: statusColor }}>
+                <div key={r.id} className="rounded-xl border p-3" style={{ ...box, background: cardBg, borderColor: statusColor }}>
                   <div className="flex items-start justify-between gap-2 mb-1.5">
-                    <div className="font-black" style={{ color: dk ? "white" : INK }}>{r.name}</div>
+                    <div className="font-black" style={{ color: dk ? "white" : INK }}>{displayName}</div>
                     <div className="flex items-center gap-1 text-[11px] font-bold shrink-0" style={{ color: sub }}>
-                      <Clock size={12} /> {r.time}s
+                      <Clock size={12} /> {r.time || 0}s
                     </div>
                   </div>
                   <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-black mb-2"
@@ -2084,7 +2071,7 @@ function Crafting({ materials, inventory, wide, onCraft }) {
                     {rows.map((row, i) => (
                       <div key={i} className="text-[12px]">
                         {row.unknown ? (
-                          <span style={{ color: ORANGE, fontWeight: 700 }}>Ukendt materiale: {row.req.name}</span>
+                          <span style={{ color: ORANGE, fontWeight: 700 }}>Ukendt materiale: {row.req.name || row.req.materialId}</span>
                         ) : row.ok ? (
                           <div className="flex items-center justify-between">
                             <span style={{ color: sub }}>{row.req.qty}× {row.mat.name}</span>
@@ -2105,24 +2092,24 @@ function Crafting({ materials, inventory, wide, onCraft }) {
                     <div className="mt-2.5 pt-2.5" style={{ borderTop: `1px solid ${dk ? "#333" : "#e7e5e4"}` }}>
                       <div className="flex items-center gap-2">
                         <input type="number" inputMode="numeric" min={1} max={maxTotal}
-                          value={qtyByRecipe[r.name] ?? 1}
+                          value={qtyByRecipe[r.id] ?? 1}
                           onChange={(e) => {
                             const v = Math.min(Math.max(1, Math.floor(+e.target.value) || 1), maxTotal);
-                            setQtyByRecipe((prev) => ({ ...prev, [r.name]: v }));
+                            setQtyByRecipe((prev) => ({ ...prev, [r.id]: v }));
                           }}
                           className="w-16 text-center rounded-lg border py-2 text-sm font-bold"
                           style={{ borderColor: dk ? "#444" : "#d6d3d1", background: dk ? "#111" : "white", color: dk ? "white" : INK }} />
-                        <button onClick={() => doCraft(r, rows, maxTotal)} disabled={busyRecipe === r.name}
+                        <button onClick={() => doCraft(r, rows, maxTotal, displayName)} disabled={busyRecipe === r.id}
                           className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg font-black text-sm disabled:opacity-50"
                           style={{ background: GREEN, color: "white" }}>
-                          <Hammer size={14} /> {busyRecipe === r.name ? "Crafter…" : "Craft"}
+                          <Hammer size={14} /> {busyRecipe === r.id ? "Crafter…" : "Craft"}
                         </button>
                       </div>
                     </div>
                   )}
-                  {msgByRecipe[r.name] && (
-                    <div className="text-[11px] font-bold mt-2" style={{ color: msgByRecipe[r.name].type === "ok" ? (dk ? "#4ade80" : GREEN) : "#f87171" }}>
-                      {msgByRecipe[r.name].text}
+                  {msgByRecipe[r.id] && (
+                    <div className="text-[11px] font-bold mt-2" style={{ color: msgByRecipe[r.id].type === "ok" ? (dk ? "#4ade80" : GREEN) : "#f87171" }}>
+                      {msgByRecipe[r.id].text}
                     </div>
                   )}
                 </div>
@@ -2131,6 +2118,192 @@ function Crafting({ materials, inventory, wide, onCraft }) {
           </div>
         </div>
       ))}
+      {recipes.length === 0 && (
+        <div className="text-sm" style={{ color: sub }}>
+          Ingen opskrifter endnu. {canManageStore ? 'Tryk "Administrer opskrifter" ovenfor for at oprette den første.' : "Spørg en ejer/manager om at oprette opskrifter."}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ── Opret/rediger/slet opskrifter (kun ejer/manager) — færdigvare og hvert
+   materiale VÆLGES fra en dropdown af eksisterende varer (aldrig fri tekst),
+   så "har jeg nok på lager"-tjekket i Crafting-visningen ovenfor altid rammer
+   den rigtige vare. ── */
+function RecipeManager({ materials, recipes, wide, onCreate, onUpdate, onDelete }) {
+  const dk = wide;
+  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const sub = dk ? "#9ca3af" : "#78716c";
+  const inp = "rounded-lg border px-2 py-2 text-sm w-full " + (dk ? "" : "border-stone-300 bg-white");
+  const inpStyle = dk ? { borderColor: "#3a3a3a", background: PANEL, color: "white" } : {};
+
+  const emptyForm = { outputMaterialId: "", outputQty: 1, cat: "", time: "", mats: [{ materialId: "", qty: "" }] };
+  const [form, setForm] = useState(emptyForm);
+  const [editingId, setEditingId] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  const cats = [...new Set(recipes.map((r) => r.cat).filter(Boolean))];
+  const sortedMaterials = [...materials].sort((a, b) => a.name.localeCompare(b.name, "da"));
+
+  const startEdit = (r) => {
+    setErr("");
+    setEditingId(r.id);
+    setForm({
+      outputMaterialId: r.outputMaterialId,
+      outputQty: r.outputQty,
+      cat: r.cat,
+      time: r.time || "",
+      mats: r.mats.length ? r.mats.map((m) => ({ materialId: m.materialId, qty: m.qty })) : [{ materialId: "", qty: "" }],
+    });
+  };
+  const cancelEdit = () => { setEditingId(null); setForm(emptyForm); setErr(""); };
+
+  const setMatRow = (i, field, val) =>
+    setForm((f) => { const mats = [...f.mats]; mats[i] = { ...mats[i], [field]: val }; return { ...f, mats }; });
+  const addMatRow = () => setForm((f) => ({ ...f, mats: [...f.mats, { materialId: "", qty: "" }] }));
+  const delMatRow = (i) => setForm((f) => ({ ...f, mats: f.mats.filter((_, idx) => idx !== i) }));
+
+  const submit = async () => {
+    setErr("");
+    const outMat = materials.find((m) => m.id === form.outputMaterialId);
+    if (!outMat) { setErr("Vælg en færdigvare."); return; }
+    const cleanMats = form.mats
+      .filter((m) => m.materialId && +m.qty > 0)
+      .map((m) => {
+        const mat = materials.find((mm) => mm.id === m.materialId);
+        return { materialId: m.materialId, name: mat ? mat.name : "", qty: +m.qty };
+      });
+    if (cleanMats.length === 0) { setErr("Tilføj mindst ét materiale."); return; }
+    const payload = {
+      outputMaterialId: outMat.id,
+      outputName: outMat.name,
+      outputQty: Math.max(1, +form.outputQty || 1),
+      cat: (form.cat || "").trim() || "Andet",
+      time: +form.time || 0,
+      mats: cleanMats,
+    };
+    setBusy(true);
+    try {
+      if (editingId) await onUpdate(editingId, payload);
+      else await onCreate(payload);
+      cancelEdit();
+    } catch (e) {
+      setErr(e.message || "Kunne ikke gemme opskriften.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (r) => {
+    const displayName = (materials.find((m) => m.id === r.outputMaterialId) || {}).name || r.outputName;
+    if (!window.confirm(`Slet opskriften "${displayName}"? Dette kan ikke fortrydes.`)) return;
+    try {
+      await onDelete(r.id);
+      if (editingId === r.id) cancelEdit();
+    } catch (e) {
+      setErr(e.message || "Kunne ikke slette opskriften.");
+    }
+  };
+
+  return (
+    <div className="rounded-xl border p-4 mb-6" style={box}>
+      <div className="font-black text-sm mb-3" style={{ color: dk ? GOLD : BLUE }}>
+        {editingId ? "Rediger opskrift" : "Opret ny opskrift"}
+      </div>
+      {err && <div className="text-[12px] font-bold mb-2" style={{ color: RED }}>{err}</div>}
+
+      <div className="grid gap-2 mb-1" style={{ gridTemplateColumns: wide ? "2fr 1fr 1fr 1fr" : "1fr" }}>
+        <div>
+          <div className="text-[11px] font-bold mb-1" style={{ color: sub }}>Færdigvare</div>
+          <select value={form.outputMaterialId} onChange={(e) => setForm((f) => ({ ...f, outputMaterialId: e.target.value }))}
+            className={inp} style={inpStyle}>
+            <option value="">— vælg vare —</option>
+            {sortedMaterials.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <div className="text-[11px] font-bold mb-1" style={{ color: sub }}>Antal pr. craft</div>
+          <input type="number" inputMode="numeric" min={1} value={form.outputQty}
+            onChange={(e) => setForm((f) => ({ ...f, outputQty: e.target.value }))}
+            className={inp} style={inpStyle} />
+        </div>
+        <div>
+          <div className="text-[11px] font-bold mb-1" style={{ color: sub }}>Kategori</div>
+          <input list="recipe-cats" value={form.cat} onChange={(e) => setForm((f) => ({ ...f, cat: e.target.value }))}
+            placeholder="fx Våben & Udstyr" className={inp} style={inpStyle} />
+          <datalist id="recipe-cats">{cats.map((c) => <option key={c} value={c} />)}</datalist>
+        </div>
+        <div>
+          <div className="text-[11px] font-bold mb-1" style={{ color: sub }}>Craft-tid (sek., valgfri)</div>
+          <input type="number" inputMode="numeric" min={0} value={form.time}
+            onChange={(e) => setForm((f) => ({ ...f, time: e.target.value }))}
+            className={inp} style={inpStyle} />
+        </div>
+      </div>
+
+      <div className="text-[11px] font-bold mb-1 mt-3" style={{ color: sub }}>Materialer</div>
+      <div className="space-y-2">
+        {form.mats.map((row, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <select value={row.materialId} onChange={(e) => setMatRow(i, "materialId", e.target.value)}
+              className={inp + " flex-1"} style={inpStyle}>
+              <option value="">— vælg materiale —</option>
+              {sortedMaterials.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </select>
+            <input type="number" inputMode="numeric" min={0} value={row.qty} onChange={(e) => setMatRow(i, "qty", e.target.value)}
+              placeholder="antal" className="rounded-lg border px-2 py-2 text-sm w-24" style={inpStyle} />
+            <button onClick={() => delMatRow(i)} className="p-2 rounded-lg" style={{ color: RED }} aria-label="Fjern materiale">
+              <Trash2 size={16} />
+            </button>
+          </div>
+        ))}
+      </div>
+      <button onClick={addMatRow} className="mt-2 text-xs font-bold flex items-center gap-1" style={{ color: dk ? GOLD : BLUE }}>
+        <Plus size={14} /> Tilføj materiale
+      </button>
+
+      <div className="flex gap-2 mt-4">
+        <button disabled={busy} onClick={submit}
+          className="flex-1 py-2.5 rounded-lg font-black text-sm disabled:opacity-50" style={{ background: GREEN, color: "white" }}>
+          {busy ? "Gemmer…" : editingId ? "Gem ændringer" : "Opret opskrift"}
+        </button>
+        {editingId && (
+          <button onClick={cancelEdit} className="px-4 py-2.5 rounded-lg font-bold text-sm border"
+            style={{ borderColor: dk ? "#444" : "#d6d3d1", color: sub }}>Annuller</button>
+        )}
+      </div>
+
+      {recipes.length > 0 && (
+        <div className="mt-6 pt-4" style={{ borderTop: `1px solid ${dk ? "#333" : "#e7e5e4"}` }}>
+          <div className="text-[11px] font-bold mb-2" style={{ color: sub }}>Alle opskrifter ({recipes.length})</div>
+          <div className="space-y-1.5">
+            {recipes.map((r) => {
+              const outMat = materials.find((m) => m.id === r.outputMaterialId);
+              return (
+                <div key={r.id} className="flex items-center justify-between gap-2 text-sm py-1.5 px-2 rounded-lg"
+                  style={{ background: dk ? "#111" : "#faf9f7" }}>
+                  <div className="min-w-0 truncate">
+                    <span className="font-bold" style={{ color: dk ? "white" : INK }}>
+                      {outMat ? outMat.name : `${r.outputName} (varen er slettet)`}
+                    </span>
+                    <span className="ml-2 text-[11px]" style={{ color: sub }}>{r.cat}</span>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <button onClick={() => startEdit(r)} className="p-1.5 rounded" style={{ color: dk ? GOLD : BLUE }} aria-label="Rediger opskrift">
+                      <Pencil size={14} />
+                    </button>
+                    <button onClick={() => remove(r)} className="p-1.5 rounded" style={{ color: RED }} aria-label="Slet opskrift">
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2689,7 +2862,7 @@ function ReceiptModal({ trade, config, pending, onConfirm, onCancel, onClose }) 
    kvitteringen (se finalizeTrade/commitTrade i App). ── */
 function CraftCheckModal({ matches, onDecide }) {
   const [qtyMap, setQtyMap] = useState(() =>
-    Object.fromEntries(matches.map((m) => [m.recipe.name, m.soldQty]))
+    Object.fromEntries(matches.map((m) => [m.recipe.id, m.soldQty]))
   );
 
   const setQty = (name, v) => {
@@ -2721,13 +2894,13 @@ function CraftCheckModal({ matches, onDecide }) {
         </div>
         <div className="px-5 py-4 space-y-3 max-h-[60vh] overflow-y-auto">
           {matches.map((m) => (
-            <div key={m.recipe.name} className="flex items-center justify-between gap-3 pb-3 border-b border-stone-100 last:border-0 last:pb-0">
+            <div key={m.recipe.id} className="flex items-center justify-between gap-3 pb-3 border-b border-stone-100 last:border-0 last:pb-0">
               <div className="min-w-0">
-                <div className="font-bold text-sm text-stone-900 truncate">{m.recipe.name}</div>
+                <div className="font-bold text-sm text-stone-900 truncate">{m.name}</div>
                 <div className="text-[11px] text-stone-500">Solgt: {m.soldQty} stk.</div>
               </div>
-              <input type="number" inputMode="numeric" min={0} value={qtyMap[m.recipe.name] ?? 0}
-                onChange={(e) => setQty(m.recipe.name, e.target.value)}
+              <input type="number" inputMode="numeric" min={0} value={qtyMap[m.recipe.id] ?? 0}
+                onChange={(e) => setQty(m.recipe.id, e.target.value)}
                 className="w-16 text-center rounded-lg border border-stone-300 py-2 text-sm font-bold shrink-0"
                 style={{ background: "white", color: INK, colorScheme: "light" }} />
             </div>
