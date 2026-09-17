@@ -605,6 +605,71 @@ async function scanTrayImage(imgSrc, worker, materials, onProgress) {
   return { items: results, fieldsCount: cells.length };
 }
 
+/* ── "Dagens overblik" — kompakt kort øverst på Hjem-siden med dagens nøgletal
+   samlet ét sted. Læser UDELUKKENDE data der allerede er indlæst (sales/
+   materials/cash) — ingen nye beregninger af kasse eller lager. "Overskud"
+   bruger PRÆCIS samme formel som Dagbogens "I dag"-visning (SalesLog nedenfor,
+   inkl. at kun AVANCEN af skranke-varer tæller, ikke hele beløbet), så tallet
+   altid stemmer med det, der allerede vises i Dagbogen. ── */
+function DailyOverview({ sales, materials, cash, cur, wide }) {
+  const dk = wide;
+  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const sub = dk ? "#9ca3af" : "#78716c";
+
+  const todayCutoff = new Date().setHours(0, 0, 0, 0);
+  const todaySales = sales.filter((t) => t.at >= todayCutoff);
+  const todayBuys = todaySales.filter((t) => t.type !== "sell");
+  const todaySells = todaySales.filter((t) => t.type === "sell");
+  const buyExpense = (t) => (t.lines || []).filter((l) => !l.isCounter).reduce((a, l) => a + l.sum, 0);
+  const buyCounterProfit = (t) => (t.lines || []).filter((l) => l.isCounter).reduce((a, l) => a + ((l.baseValue || 0) - l.sum), 0);
+  const udgifter = todayBuys.reduce((a, t) => a + buyExpense(t), 0);
+  const indtaegter = todaySells.reduce((a, t) => a + t.total, 0) + todayBuys.reduce((a, t) => a + buyCounterProfit(t), 0);
+  const overskud = indtaegter - udgifter;
+
+  // Mest handlede vare i dag (antal styk, køb + salg lagt sammen) — skranke-varer
+  // (engangs-pantegenstande, ikke "rigtige" materialer) tælles ikke med her, samme
+  // udelukkelse som Top-varer-siden bruger.
+  const itemCounts = {};
+  todaySales.forEach((t) => {
+    (t.lines || []).forEach((l) => {
+      if (!l.id || l.isCounter) return;
+      itemCounts[l.id] = (itemCounts[l.id] || 0) + (l.qty || 0);
+    });
+  });
+  const topEntry = Object.entries(itemCounts).sort((a, b) => b[1] - a[1])[0];
+  const topName = topEntry ? ((materials.find((m) => m.id === topEntry[0]) || {}).name || topEntry[0]) : null;
+
+  return (
+    <div className="rounded-xl border p-3" style={box}>
+      <div className="text-xs font-black uppercase tracking-widest mb-2 flex items-center gap-1.5" style={{ color: dk ? GOLD : BLUE }}>
+        <TrendingUp size={13} /> Dagens overblik
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+        <div>
+          <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>Overskud i dag</div>
+          <div className="text-base font-black tabular-nums" style={{ color: overskud >= 0 ? (dk ? "#4ade80" : GREEN) : (dk ? "#f87171" : RED) }}>
+            {fmt(overskud)} {cur}
+          </div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>Handler i dag</div>
+          <div className="text-base font-black tabular-nums" style={{ color: dk ? "white" : INK }}>{todaySales.length}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>Kassen</div>
+          <div className="text-base font-black tabular-nums" style={{ color: dk ? GOLD : GOLD_D }}>{fmt(cash)} {cur}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>Mest handlet i dag</div>
+          <div className="text-base font-black truncate" style={{ color: dk ? "white" : INK }} title={topName || ""}>
+            {topName ? `${topName} (${topEntry[1]})` : "—"}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   // ── Login (Supabase Auth) ──
   const [session, setSession] = useState(undefined); // undefined = tjekker session, null = ikke logget ind
@@ -1320,6 +1385,7 @@ export default function App() {
       ) : (
         <div className={wide ? "flex gap-5 px-8 pt-6 items-start" : "px-3 pt-3 space-y-2"}>
           <div className={wide ? "flex-1 min-w-0 space-y-3" : "space-y-2"}>
+          <DailyOverview sales={sales} materials={materials} cash={cash} cur={cur} wide={wide} />
           <div className="flex rounded-lg overflow-hidden border text-sm font-black" style={{ borderColor: wide ? "#3a3a3a" : "#d6d3d1" }}>
             <button onClick={() => switchTradeMode("buy")} className="flex-1 flex items-center justify-center gap-1.5 py-2.5"
               style={tradeMode === "buy" ? { background: GOLD, color: INK } : { background: wide ? PANEL : "white", color: wide ? "#9ca3af" : "#78716c" }}>
