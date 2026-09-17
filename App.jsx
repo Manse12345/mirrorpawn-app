@@ -3056,6 +3056,11 @@ function SalesLog({ sales, cur, wide, onClear, onReverse, onEditCustomer, onEdit
   const dk = wide;
   const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
+  // "Fortryd handel" og "Ret beløb" må kun bruges af ejer/manager — samme rolle-tjek
+  // som databasen nu også kræver for direkte UPDATE/DELETE på "sales" (se
+  // 13-restrict-write-access.sql), så UI'en ikke viser knapper, en "ansat" reelt
+  // ikke kan bruge.
+  const canManage = role === "ejer" || role === "manager";
   const sum = (arr, f) => arr.reduce((a, x) => a + f(x), 0);
 
   const now = Date.now();
@@ -3124,11 +3129,13 @@ function SalesLog({ sales, cur, wide, onClear, onReverse, onEditCustomer, onEdit
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="font-black tabular-nums" style={{ color: isGain ? (dk ? "#4ade80" : GREEN) : (dk ? "#f87171" : RED) }}>{amountPrefix}{fmt(netAmount)} {cur}</span>
-                  <button onClick={() => onReverse(t)}
-                    className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-bold"
-                    style={{ color: RED, background: dk ? "rgba(192,57,43,.15)" : "#fdf0ef" }}>
-                    <RotateCcw size={13} /> Fortryd
-                  </button>
+                  {canManage && (
+                    <button onClick={() => onReverse(t)}
+                      className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-bold"
+                      style={{ color: RED, background: dk ? "rgba(192,57,43,.15)" : "#fdf0ef" }}>
+                      <RotateCcw size={13} /> Fortryd
+                    </button>
+                  )}
                 </div>
               </div>
               <div className="text-xs mt-1" style={{ color: sub }}>
@@ -3137,7 +3144,7 @@ function SalesLog({ sales, cur, wide, onClear, onReverse, onEditCustomer, onEdit
               </div>
               <div className="flex items-center gap-4 mt-2 pt-2" style={{ borderTop: `1px solid ${dk ? "#2a2a2a" : "#f0efed"}` }}>
                 <TradeCustIdEditor dk={dk} custId={t.custId} onSave={(v) => onEditCustomer(t, v)} />
-                <TradeAmountEditor dk={dk} cur={cur} total={t.total} onSave={(v) => onEditAmount(t, v)} />
+                {canManage && <TradeAmountEditor dk={dk} cur={cur} total={t.total} onSave={(v) => onEditAmount(t, v)} />}
               </div>
             </div>
           );
