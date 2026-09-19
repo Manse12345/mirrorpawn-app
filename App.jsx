@@ -1467,6 +1467,11 @@ export default function App() {
         <div className={wide ? "flex gap-5 px-8 pt-6 items-start" : "px-3 pt-3 space-y-2"}>
           <div className={wide ? "flex-1 min-w-0 space-y-3" : "space-y-2"}>
           <DailyOverview sales={sales} materials={materials} cash={cash} cur={cur} wide={wide} />
+          {/* Samme "Din vagt"-kort som Vagt-fanen (ShiftStatusCard) — genbrug, ikke en ny
+              mekanik. Placeret her, lige før kassen/Køb-Sælg-skiftet, så man ser det og
+              husker at stemple ind, FØR man begynder at handle. */}
+          <ShiftStatusCard profile={profile} activeShifts={activeShifts} wide={wide} err={shiftErr}
+            onClockIn={handleClockIn} onClockOut={handleClockOut} />
           <div className="flex rounded-lg overflow-hidden border text-sm font-black" style={{ borderColor: wide ? "#3a3a3a" : "#d6d3d1" }}>
             <button onClick={() => switchTradeMode("buy")} className="flex-1 flex items-center justify-center gap-1.5 py-2.5"
               style={tradeMode === "buy" ? { background: GOLD, color: INK } : { background: wide ? PANEL : "white", color: wide ? "#9ca3af" : "#78716c" }}>
@@ -3246,18 +3251,59 @@ function SalesLog({ sales, cur, wide, onClear, onReverse, onEditCustomer, onEdit
    dag/7 dage/30 dage/alt-mønster som Dagbogen ovenfor) og Ret/Luk-vagt er kun
    for hhv. ejer+manager og ejer, samme rolle-tjek som databasens RLS/RPC'er
    allerede håndhæver (se canManageStore/isOwner i App). */
+// "Din vagt"-kortet: stempl ind/ud for DEN INDLOGGEDE bruger. Status kommer
+// udelukkende fra "activeShifts" (indlæst i App fra "shifts"-tabellen i
+// databasen, se loadActiveShiftsFn) og skrives via de samme onClockIn/onClockOut
+// (handleClockIn/handleClockOut i App, som kalder clock_in()/clock_out() i
+// databasen). Denne ÉNE komponent genbruges BÅDE på Hjem og i Vagt-fanen — det
+// er ikke to separate kort/mekanikker, så et klik ét sted slår øjeblikkeligt
+// igennem det andet, næste gang activeShifts genindlæses (samme poll som resten
+// af Hjem).
+function ShiftStatusCard({ profile, activeShifts, wide, err, onClockIn, onClockOut }) {
+  const dk = wide;
+  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const sub = dk ? "#9ca3af" : "#78716c";
+  const [busy, setBusy] = useState(false);
+  const myShift = activeShifts.find((s) => s.userId === profile.id);
+  const fmtHM = (ms) => new Date(ms).toTimeString().slice(0, 5);
+
+  const doClockIn = async () => { setBusy(true); try { await onClockIn(); } finally { setBusy(false); } };
+  const doClockOut = async () => { setBusy(true); try { await onClockOut(); } finally { setBusy(false); } };
+
+  return (
+    <div>
+      {err && (
+        <div className="mb-2 px-3 py-2 rounded-lg text-sm font-bold" style={{ background: "rgba(192,57,43,.15)", color: RED }}>{err}</div>
+      )}
+      <div className="rounded-xl border p-4 flex items-center justify-between gap-3 flex-wrap" style={box}>
+        <div>
+          <div className="text-xs font-black uppercase tracking-wider mb-1" style={{ color: dk ? GOLD : BLUE }}>Din vagt</div>
+          {myShift ? (
+            <div className="text-sm font-bold" style={{ color: dk ? "#4ade80" : GREEN }}>● På vagt siden kl. {fmtHM(myShift.clockIn)}</div>
+          ) : (
+            <div className="text-sm" style={{ color: sub }}>Ikke på vagt</div>
+          )}
+        </div>
+        {myShift ? (
+          <button disabled={busy} onClick={doClockOut} className="px-4 py-2.5 rounded-full font-black text-sm"
+            style={{ background: RED, color: "white", opacity: busy ? .6 : 1 }}>Stempl ud</button>
+        ) : (
+          <button disabled={busy} onClick={doClockIn} className="px-4 py-2.5 rounded-full font-black text-sm"
+            style={{ background: GREEN, color: "white", opacity: busy ? .6 : 1 }}>Stempl ind</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ShiftView({ profile, activeShifts, shiftLog, shiftLogLoading, canManageStore, isOwner, wide, err, onClockIn, onClockOut, onCloseShift, onEditShift }) {
   const dk = wide;
   const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
   const [period, setPeriod] = useState("dag"); // dag | uge | måned | alt — samme som Dagbog
-  const [busy, setBusy] = useState(false);
   const [editingId, setEditingId] = useState(null);
 
-  const myShift = activeShifts.find((s) => s.userId === profile.id);
-
-  const doClockIn = async () => { setBusy(true); try { await onClockIn(); } finally { setBusy(false); } };
-  const doClockOut = async () => { setBusy(true); try { await onClockOut(); } finally { setBusy(false); } };
+  const fmtHM = (ms) => new Date(ms).toTimeString().slice(0, 5);
 
   const now = Date.now();
   const cutoff = period === "dag" ? new Date().setHours(0, 0, 0, 0)
@@ -3277,30 +3323,11 @@ function ShiftView({ profile, activeShifts, shiftLog, shiftLogLoading, canManage
     const totalMin = Math.max(0, Math.round(ms / 60000));
     return `${Math.floor(totalMin / 60)}t ${totalMin % 60}m`;
   };
-  const fmtHM = (ms) => new Date(ms).toTimeString().slice(0, 5);
 
   return (
     <div className={"pb-10 " + (dk ? "px-8 pt-6 mx-auto text-white" : "px-3 pt-3")} style={dk ? { maxWidth: 900 } : {}}>
-      {err && (
-        <div className="mb-3 px-3 py-2 rounded-lg text-sm font-bold" style={{ background: "rgba(192,57,43,.15)", color: RED }}>{err}</div>
-      )}
-
-      <div className="rounded-xl border p-4 mb-3 flex items-center justify-between gap-3 flex-wrap" style={box}>
-        <div>
-          <div className="text-xs font-black uppercase tracking-wider mb-1" style={{ color: dk ? GOLD : BLUE }}>Din vagt</div>
-          {myShift ? (
-            <div className="text-sm font-bold" style={{ color: dk ? "#4ade80" : GREEN }}>● På vagt siden kl. {fmtHM(myShift.clockIn)}</div>
-          ) : (
-            <div className="text-sm" style={{ color: sub }}>Ikke på vagt</div>
-          )}
-        </div>
-        {myShift ? (
-          <button disabled={busy} onClick={doClockOut} className="px-4 py-2.5 rounded-full font-black text-sm"
-            style={{ background: RED, color: "white", opacity: busy ? .6 : 1 }}>Stempl ud</button>
-        ) : (
-          <button disabled={busy} onClick={doClockIn} className="px-4 py-2.5 rounded-full font-black text-sm"
-            style={{ background: GREEN, color: "white", opacity: busy ? .6 : 1 }}>Stempl ind</button>
-        )}
+      <div className="mb-3">
+        <ShiftStatusCard profile={profile} activeShifts={activeShifts} wide={wide} err={err} onClockIn={onClockIn} onClockOut={onClockOut} />
       </div>
 
       <div className="rounded-xl border p-4 mb-3" style={box}>
