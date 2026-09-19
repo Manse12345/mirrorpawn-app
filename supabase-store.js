@@ -41,9 +41,18 @@ export async function loadMyProfile(userId) {
 }
 export async function loadAllProfiles() {
   const { data, error } = await supabase
-    .from("profiles").select("id, username, name, role, created_at").order("created_at");
+    .from("profiles").select("id, username, name, role, created_at, discord_id").order("created_at");
   if (error) throw error;
   return data || [];
+}
+// Retter KUN "discord_id" (se 16-profiles-discord-id.sql) — ejer/manager, tjekket af
+// en RLS-policy PÅ RÆKKEN og af et kolonne-niveau-grant, der begrænser præcis denne
+// skrivevej til den ene kolonne. Går UDENOM manage-staff Edge Function med vilje —
+// den forbliver "kun ejer" og uændret; denne funktion rører aldrig navn/rolle/
+// username/kodeord, kun Discord-ID'et.
+export async function setDiscordId(userId, discordId) {
+  const { error } = await supabase.from("profiles").update({ discord_id: discordId || null }).eq("id", userId);
+  if (error) throw error;
 }
 
 // ---- Ansatte-administration (kun ejer — via sikker Edge Function) ----

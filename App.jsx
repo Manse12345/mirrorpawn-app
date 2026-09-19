@@ -3,7 +3,7 @@ import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, Ba
 import {
   loadConfig, saveConfig as sbSaveConfig, loadSales as sbLoadSales, insertSale, logEvent,
   signIn, signOut, getSession, onAuthChange, loadMyProfile, loadAllProfiles,
-  createStaff, updateStaff, deleteStaff,
+  createStaff, updateStaff, deleteStaff, setDiscordId,
   loadInventory, adjustInventory, setInventoryQty,
   loadMaterialVisibility, setMaterialVisibility as sbSetMaterialVisibility,
   loadMaterialImages, setMaterialImage as sbSetMaterialImage,
@@ -1371,7 +1371,7 @@ export default function App() {
             style={view === "vagt" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
             <Clock size={16} /> Vagt
           </button>
-          {isOwner && (
+          {canManageStore && (
             <button onClick={() => { setView(view === "ansatte" ? "beregner" : "ansatte"); setShowSettings(false); }}
               className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
               style={view === "ansatte" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
@@ -1439,8 +1439,8 @@ export default function App() {
         <Crafting materials={materials} inventory={inventory} wide={wide} onCraft={handleCraft}
           recipes={recipes} canManageStore={canManageStore}
           onCreateRecipe={handleCreateRecipe} onUpdateRecipe={handleUpdateRecipe} onDeleteRecipe={handleDeleteRecipe} />
-      ) : view === "ansatte" && !showSettings && isOwner ? (
-        <StaffAdmin staffList={staffList} refresh={refreshStaff} myId={profile.id} wide={wide} />
+      ) : view === "ansatte" && !showSettings && canManageStore ? (
+        <StaffAdmin staffList={staffList} refresh={refreshStaff} myId={profile.id} wide={wide} canFullyManage={isOwner} />
       ) : view === "leaderboard" && !showSettings && canManageStore ? (
         <LeaderboardAdmin sales={sales} cur={cur} wide={wide} settings={lbSettings}
           onSave={async (patch) => {
@@ -2460,8 +2460,16 @@ function RecipeManager({ materials, recipes, wide, onCreate, onUpdate, onDelete 
   );
 }
 
-/* ── Ansatte (login-administration, kun ejer) ── */
-function StaffAdmin({ staffList, refresh, myId, wide }) {
+/* ── Ansatte (login-administration) ── Oprette/slette konti og ændre navn/rolle/
+   kodeord kræver stadig EJER (canFullyManage — går gennem den sikre manage-staff
+   Edge Function, som selv håndhæver "kun ejer" med service_role, se
+   supabase/functions/manage-staff/index.ts, UÆNDRET). Manager må se denne side og
+   rette Discord-ID pr. ansat (gemmes direkte i "profiles.discord_id" — se
+   16-profiles-discord-id.sql: en RLS-policy tillader ejer/manager at UPDATE'e
+   profiles-rækker, og et kolonne-niveau-grant begrænser den skrivning til PRÆCIS
+   "discord_id"-kolonnen, så en manager aldrig kan ændre navn/rolle/username ad den
+   vej, uanset hvad klienten sender). */
+function StaffAdmin({ staffList, refresh, myId, wide, canFullyManage }) {
   const dk = wide;
   const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
@@ -2474,7 +2482,7 @@ function StaffAdmin({ staffList, refresh, myId, wide }) {
   const [err, setErr] = useState("");
   const [newForm, setNewForm] = useState({ username: "", password: "", name: "", role: "ansat" });
   const [editing, setEditing] = useState(null);
-  const [editForm, setEditForm] = useState({ name: "", role: "ansat", password: "" });
+  const [editForm, setEditForm] = useState({ name: "", role: "ansat", password: "", discordId: "" });
 
   const submitNew = async () => {
     setErr("");
@@ -2487,11 +2495,18 @@ function StaffAdmin({ staffList, refresh, myId, wide }) {
     } catch (e) { setErr(e.message || "Kunne ikke oprette ansat."); }
     setBusy(false);
   };
-  const startEdit = (p) => { setEditing(p.id); setEditForm({ name: p.name, role: p.role, password: "" }); setErr(""); };
+  const startEdit = (p) => {
+    setEditing(p.id);
+    setEditForm({ name: p.name, role: p.role, password: "", discordId: p.discord_id || "" });
+    setErr("");
+  };
   const submitEdit = async (id) => {
     setBusy(true); setErr("");
     try {
-      await updateStaff(id, { name: editForm.name, role: editForm.role, password: editForm.password || undefined });
+      if (canFullyManage) {
+        await updateStaff(id, { name: editForm.name, role: editForm.role, password: editForm.password || undefined });
+      }
+      await setDiscordId(id, editForm.discordId.trim());
       setEditing(null);
       await refresh();
     } catch (e) { setErr(e.message || "Kunne ikke gemme ændringer."); }
@@ -2507,25 +2522,41 @@ function StaffAdmin({ staffList, refresh, myId, wide }) {
   return (
     <div className={wrap} style={wrapStyle}>
       <div className="text-xs font-black uppercase tracking-wider mb-2" style={{ color: dk ? GOLD : BLUE }}>Ansatte</div>
+      {!canFullyManage && (
+        <div className="text-[11px] mb-2" style={{ color: sub }}>
+          Som manager kan du tilføje/rette Discord-ID pr. ansat. Oprettelse/sletning af konti samt ændring af navn, rolle og kodeord kræver ejer.
+        </div>
+      )}
       {err && <div className="text-xs font-semibold mb-2" style={{ color: RED }}>{err}</div>}
       <div className="space-y-2 mb-4">
         {staffList.map((p) => (
           <div key={p.id} className="rounded-xl border p-3" style={box}>
             {editing === p.id ? (
               <div className="space-y-2">
-                <div className="flex items-center gap-2">
-                  <input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                    placeholder="Navn" className={inp + " flex-1 min-w-0"} style={inpStyle} />
-                  <select value={editForm.role} onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
-                    className={inp} style={inpStyle}>
-                    <option value="ansat">Ansat</option>
-                    <option value="manager">Manager</option>
-                    <option value="ejer">Ejer</option>
-                  </select>
+                {canFullyManage && (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
+                        placeholder="Navn" className={inp + " flex-1 min-w-0"} style={inpStyle} />
+                      <select value={editForm.role} onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
+                        className={inp} style={inpStyle}>
+                        <option value="ansat">Ansat</option>
+                        <option value="manager">Manager</option>
+                        <option value="ejer">Ejer</option>
+                      </select>
+                    </div>
+                    <input value={editForm.password} onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
+                      placeholder="Nyt kodeord (kun hvis det skal skiftes)" type="password"
+                      className={inp + " w-full"} style={inpStyle} />
+                  </>
+                )}
+                <div>
+                  <input value={editForm.discordId} onChange={(e) => setEditForm({ ...editForm, discordId: e.target.value })}
+                    placeholder="Discord bruger-ID (valgfrit)" className={inp + " w-full"} style={inpStyle} />
+                  <div className="text-[10px] mt-1" style={{ color: sub }}>
+                    Discord bruger-ID (højreklik på dit navn i Discord → Kopiér bruger-ID, kræver Udviklertilstand)
+                  </div>
                 </div>
-                <input value={editForm.password} onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
-                  placeholder="Nyt kodeord (kun hvis det skal skiftes)" type="password"
-                  className={inp + " w-full"} style={inpStyle} />
                 <div className="flex gap-2">
                   <button disabled={busy} onClick={() => submitEdit(p.id)} className="flex-1 py-2 rounded-lg font-bold text-sm" style={{ background: GREEN, color: "white" }}>Gem</button>
                   <button onClick={() => setEditing(null)} className="flex-1 py-2 rounded-lg font-bold text-sm border" style={{ borderColor: dk ? "#444" : "#d6d3d1", color: sub }}>Annullér</button>
@@ -2537,11 +2568,13 @@ function StaffAdmin({ staffList, refresh, myId, wide }) {
                   <div className="font-black" style={{ color: dk ? "white" : INK }}>
                     {p.name} {p.id === myId && <span className="text-[10px] font-bold" style={{ color: sub }}>(dig)</span>}
                   </div>
-                  <div className="text-[11px]" style={{ color: sub }}>@{p.username} · {p.role}</div>
+                  <div className="text-[11px]" style={{ color: sub }}>
+                    @{p.username} · {p.role}{p.discord_id ? <> · Discord: <code>{p.discord_id}</code></> : ""}
+                  </div>
                 </div>
                 <div className="flex items-center gap-1">
                   <button onClick={() => startEdit(p)} className="text-xs font-bold px-2 py-1" style={{ color: dk ? GOLD : BLUE }}>Rediger</button>
-                  {p.id !== myId && (
+                  {canFullyManage && p.id !== myId && (
                     <button onClick={() => remove(p.id)} className="p-1" style={{ color: dk ? "#666" : "#d6d3d1" }}><Trash2 size={15} /></button>
                   )}
                 </div>
@@ -2551,31 +2584,35 @@ function StaffAdmin({ staffList, refresh, myId, wide }) {
         ))}
       </div>
 
-      <div className="text-xs font-black uppercase tracking-wider mb-2" style={{ color: dk ? GOLD : BLUE }}>Opret ny ansat</div>
-      <div className="rounded-xl border-2 border-dashed p-3 space-y-2" style={{ borderColor: dk ? "#444" : "#d6d3d1" }}>
-        <div className="flex items-center gap-2">
-          <input value={newForm.username} onChange={(e) => setNewForm({ ...newForm, username: e.target.value })}
-            placeholder="Brugernavn" className={inp + " flex-1 min-w-0"} style={inpStyle} />
-          <input value={newForm.password} onChange={(e) => setNewForm({ ...newForm, password: e.target.value })}
-            placeholder="Kodeord (min. 6 tegn)" type="password" className={inp + " flex-1 min-w-0"} style={inpStyle} />
-        </div>
-        <div className="flex items-center gap-2">
-          <input value={newForm.name} onChange={(e) => setNewForm({ ...newForm, name: e.target.value })}
-            placeholder="Fulde navn" className={inp + " flex-1 min-w-0"} style={inpStyle} />
-          <select value={newForm.role} onChange={(e) => setNewForm({ ...newForm, role: e.target.value })}
-            className={inp} style={inpStyle}>
-            <option value="ansat">Ansat</option>
-            <option value="manager">Manager</option>
-            <option value="ejer">Ejer</option>
-          </select>
-        </div>
-        <button disabled={busy} onClick={submitNew} className="w-full py-2.5 rounded-lg font-black text-sm" style={{ background: GOLD, color: INK }}>
-          <Plus size={15} className="inline mr-1" /> Opret ansat
-        </button>
-      </div>
-      <div className="text-[11px] mt-2" style={dk ? { color: "#6b7280" } : { color: "#a8a29e" }}>
-        Rollerne styrer adgang: <b>Ansat</b> kan bruge beregneren. <b>Manager</b> kan også redigere priser. <b>Ejer</b> har fuld adgang, inkl. denne side.
-      </div>
+      {canFullyManage && (
+        <>
+          <div className="text-xs font-black uppercase tracking-wider mb-2" style={{ color: dk ? GOLD : BLUE }}>Opret ny ansat</div>
+          <div className="rounded-xl border-2 border-dashed p-3 space-y-2" style={{ borderColor: dk ? "#444" : "#d6d3d1" }}>
+            <div className="flex items-center gap-2">
+              <input value={newForm.username} onChange={(e) => setNewForm({ ...newForm, username: e.target.value })}
+                placeholder="Brugernavn" className={inp + " flex-1 min-w-0"} style={inpStyle} />
+              <input value={newForm.password} onChange={(e) => setNewForm({ ...newForm, password: e.target.value })}
+                placeholder="Kodeord (min. 6 tegn)" type="password" className={inp + " flex-1 min-w-0"} style={inpStyle} />
+            </div>
+            <div className="flex items-center gap-2">
+              <input value={newForm.name} onChange={(e) => setNewForm({ ...newForm, name: e.target.value })}
+                placeholder="Fulde navn" className={inp + " flex-1 min-w-0"} style={inpStyle} />
+              <select value={newForm.role} onChange={(e) => setNewForm({ ...newForm, role: e.target.value })}
+                className={inp} style={inpStyle}>
+                <option value="ansat">Ansat</option>
+                <option value="manager">Manager</option>
+                <option value="ejer">Ejer</option>
+              </select>
+            </div>
+            <button disabled={busy} onClick={submitNew} className="w-full py-2.5 rounded-lg font-black text-sm" style={{ background: GOLD, color: INK }}>
+              <Plus size={15} className="inline mr-1" /> Opret ansat
+            </button>
+          </div>
+          <div className="text-[11px] mt-2" style={dk ? { color: "#6b7280" } : { color: "#a8a29e" }}>
+            Rollerne styrer adgang: <b>Ansat</b> kan bruge beregneren. <b>Manager</b> kan også redigere priser. <b>Ejer</b> har fuld adgang, inkl. denne side.
+          </div>
+        </>
+      )}
     </div>
   );
 }
