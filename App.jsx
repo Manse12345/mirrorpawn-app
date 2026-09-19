@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, Lock, Package, ArrowLeftRight, Home, Camera, Hammer, Trophy, TrendingUp, Star, Pencil } from "lucide-react";
+import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, Lock, Package, ArrowLeftRight, Home, Camera, Hammer, Trophy, TrendingUp, Star, Pencil, Download } from "lucide-react";
 import {
   loadConfig, saveConfig as sbSaveConfig, loadSales as sbLoadSales, insertSale, logEvent,
   signIn, signOut, getSession, onAuthChange, loadMyProfile, loadAllProfiles,
@@ -1456,7 +1456,7 @@ export default function App() {
         <TopCustomers sales={sales} config={config} cur={cur} wide={wide} />
       ) : view === "vagt" && !showSettings ? (
         <ShiftView profile={profile} activeShifts={activeShifts} shiftLog={shiftLog} shiftLogLoading={shiftLogLoading}
-          canManageStore={canManageStore} isOwner={isOwner} wide={wide} err={shiftErr}
+          staffList={staffList} canManageStore={canManageStore} isOwner={isOwner} wide={wide} err={shiftErr}
           onClockIn={handleClockIn} onClockOut={handleClockOut}
           onCloseShift={handleCloseShift} onEditShift={handleEditShift} />
       ) : showSettings ? (
@@ -3296,7 +3296,7 @@ function ShiftStatusCard({ profile, activeShifts, wide, err, onClockIn, onClockO
   );
 }
 
-function ShiftView({ profile, activeShifts, shiftLog, shiftLogLoading, canManageStore, isOwner, wide, err, onClockIn, onClockOut, onCloseShift, onEditShift }) {
+function ShiftView({ profile, activeShifts, shiftLog, shiftLogLoading, staffList, canManageStore, isOwner, wide, err, onClockIn, onClockOut, onCloseShift, onEditShift }) {
   const dk = wide;
   const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
@@ -3387,6 +3387,14 @@ function ShiftView({ profile, activeShifts, shiftLog, shiftLogLoading, canManage
                 onSaveEdit={async (ci, co) => { await onEditShift(s.id, ci, co); setEditingId(null); }} />
             ))}
           </div>
+
+          {/* Eksport-værktøj til dokumentation (fx til kommunen) — læser UDELUKKENDE den
+              allerede indlæste "shiftLog" (samme kun-ejer/manager-data som rapporten
+              ovenfor, se "manager read all shifts"-RLS-policyen i 14-shifts.sql). Ingen
+              nyt DB-kald, ingen skrivning — ren visning + CSV-download i browseren. */}
+          <div className="mt-6">
+            <ShiftExport staffList={staffList} shiftLog={shiftLog} shiftLogLoading={shiftLogLoading} dk={dk} box={box} sub={sub} />
+          </div>
         </>
       )}
     </div>
@@ -3450,6 +3458,128 @@ function ShiftLogRow({ shift, dk, box, sub, isOwner, editing, onStartEdit, onCan
             className="px-3 py-1.5 rounded-full font-black text-xs" style={{ background: GOLD, color: INK }}>Gem</button>
           <button onClick={onCancelEdit} className="px-3 py-1.5 rounded-full font-black text-xs" style={{ background: dk ? "#2a2a2a" : "#f0efed", color: sub }}>Annuller</button>
         </div>
+      )}
+    </div>
+  );
+}
+
+// Eksport-værktøj til vagtdata (kun ejer/manager — se canManageStore i ShiftView, som
+// er den ENESTE, der renderer denne komponent). Ren visning + CSV-download i browseren:
+// læser UDELUKKENDE "shiftLog" (allerede indlæst via loadShiftLog, begrænset af
+// "manager read all shifts"-RLS-policyen i 14-shifts.sql), ingen nyt DB-kald og INGEN
+// skrivning nogen steder — kan aldrig ændre en vagt, kassen, lageret eller en handel.
+// Én linje pr. VAGT (ikke slået sammen pr. dag) — konsekvent samme visning på skærmen
+// og i den downloadede CSV, så de to altid stemmer overens.
+function ShiftExport({ staffList, shiftLog, shiftLogLoading, dk, box, sub }) {
+  const todayStr = () => new Date().toISOString().slice(0, 10);
+  const monthAgoStr = () => new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const [empId, setEmpId] = useState("alle");
+  const [fromDate, setFromDate] = useState(monthAgoStr());
+  const [toDate, setToDate] = useState(todayStr());
+
+  const fmtHM = (ms) => new Date(ms).toTimeString().slice(0, 5);
+  const fmtDate = (ms) => new Date(ms).toLocaleDateString("da-DK");
+  // "t:mm" (timer:minutter) — samme format for BÅDE hver enkelt vagt og totalen
+  // nederst, som ønsket ("total timer:minutter").
+  const fmtDuration = (ms) => {
+    const totalMin = Math.max(0, Math.round(ms / 60000));
+    return `${Math.floor(totalMin / 60)}:${String(totalMin % 60).padStart(2, "0")}`;
+  };
+  const inputStyle = { borderColor: dk ? "#3a3a3a" : "#d6d3d1", background: dk ? "#141414" : "white", color: dk ? "white" : INK };
+
+  // "Fra"/"Til" tolkes som HELE dage i lokal tid (00:00:00 til 23:59:59.999), så en
+  // vagt, der starter sidst på "til"-dagen, ikke falder udenfor ved en kant-fejl.
+  const fromMs = fromDate ? new Date(fromDate + "T00:00:00").getTime() : -Infinity;
+  const toMs = toDate ? new Date(toDate + "T23:59:59.999").getTime() : Infinity;
+
+  const rows = shiftLog
+    .filter((s) => empId === "alle" || s.userId === empId)
+    .filter((s) => s.clockIn >= fromMs && s.clockIn <= toMs)
+    .sort((a, b) => a.clockIn - b.clockIn);
+
+  const now = Date.now();
+  const totalMs = rows.reduce((a, s) => a + ((s.clockOut || now) - s.clockIn), 0);
+  const employeeName = empId === "alle" ? "Alle" : ((staffList.find((p) => p.id === empId) || {}).name || "Ukendt");
+
+  const exportCsv = () => {
+    const sep = ";"; // Danske Excel-opsætninger bruger typisk semikolon som listeseparator
+    const esc = (v) => `"${String(v).replace(/"/g, '""')}"`;
+    const line = (cols) => cols.map(esc).join(sep);
+    const lines = [
+      line(["Medarbejder", "Dato", "Ind", "Ud", "Varighed (t:mm)"]),
+      ...rows.map((s) => line([
+        s.name, fmtDate(s.clockIn), fmtHM(s.clockIn),
+        s.clockOut ? fmtHM(s.clockOut) : "pågår",
+        fmtDuration((s.clockOut || now) - s.clockIn),
+      ])),
+      line(["", "", "", "Total", fmtDuration(totalMs)]),
+    ];
+    // ﻿ (BOM) sikrer at æ/ø/å vises korrekt, når filen åbnes direkte i Excel.
+    const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const safe = (s) => s.replace(/[^\p{L}\p{N}_-]+/gu, "_");
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `vagt_${safe(employeeName)}_${fromDate || "start"}_${toDate || "slut"}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="rounded-xl border p-4" style={box}>
+      <div className="text-xs font-black uppercase tracking-wider mb-3" style={{ color: dk ? GOLD : BLUE }}>
+        Eksportér vagtdata (fx til dokumentation)
+      </div>
+      <div className="flex flex-wrap items-end gap-3 mb-3">
+        <div>
+          <div className="text-[10px] uppercase font-bold mb-1" style={{ color: sub }}>Medarbejder</div>
+          <select value={empId} onChange={(e) => setEmpId(e.target.value)}
+            className="rounded-lg border px-2 py-1.5 text-sm" style={inputStyle}>
+            <option value="alle">Alle medarbejdere</option>
+            {staffList.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase font-bold mb-1" style={{ color: sub }}>Fra dato</div>
+          <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)}
+            className="rounded-lg border px-2 py-1.5 text-sm" style={inputStyle} />
+        </div>
+        <div>
+          <div className="text-[10px] uppercase font-bold mb-1" style={{ color: sub }}>Til dato</div>
+          <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)}
+            className="rounded-lg border px-2 py-1.5 text-sm" style={inputStyle} />
+        </div>
+        <button onClick={exportCsv} disabled={rows.length === 0}
+          className="flex items-center gap-1.5 px-4 py-2 rounded-full font-black text-sm disabled:opacity-50"
+          style={{ background: GOLD, color: INK }}>
+          <Download size={15} /> Eksportér (CSV)
+        </button>
+      </div>
+
+      {shiftLogLoading ? (
+        <div className="text-sm py-4 text-center" style={{ color: sub }}>Henter…</div>
+      ) : rows.length === 0 ? (
+        <div className="text-sm py-4 text-center" style={{ color: sub }}>Ingen vagter i den valgte periode.</div>
+      ) : (
+        <>
+          <div className="space-y-1.5 max-h-72 overflow-y-auto mb-3 pr-1">
+            {rows.map((s) => (
+              <div key={s.id} className="flex items-center justify-between gap-2 text-sm py-1"
+                style={{ borderBottom: `1px solid ${dk ? "#2a2a2a" : "#f0efed"}` }}>
+                <span className="min-w-0 truncate" style={{ color: dk ? "white" : INK }}>
+                  {empId === "alle" ? `${s.name} · ` : ""}{fmtDate(s.clockIn)}
+                </span>
+                <span className="shrink-0 tabular-nums" style={{ color: sub }}>
+                  {fmtHM(s.clockIn)}–{s.clockOut ? fmtHM(s.clockOut) : "pågår"} · {fmtDuration((s.clockOut || now) - s.clockIn)}
+                </span>
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center justify-between pt-2 font-black text-sm" style={{ borderTop: `2px solid ${dk ? "#333" : "#e7e5e4"}` }}>
+            <span style={{ color: dk ? "white" : INK }}>{rows.length} vagt{rows.length === 1 ? "" : "er"} i alt</span>
+            <span style={{ color: dk ? GOLD : GOLD_D }}>Total: {fmtDuration(totalMs)} timer</span>
+          </div>
+        </>
       )}
     </div>
   );
