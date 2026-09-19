@@ -12,6 +12,8 @@ import {
   loadLeaderboardSettings, saveLeaderboardSettings,
   loadCustomerPhones, saveCustomerPhone,
   loadRecipes, createRecipe, updateRecipe, deleteRecipe,
+  loadActiveShifts, loadShiftLog, clockIn as sbClockIn, clockOut as sbClockOut,
+  closeShift as sbCloseShift, editShift as sbEditShift,
 } from "./supabase-store.js";
 
 /* ── Pawnshop-beregner ────────────────────────────────────────────
@@ -764,6 +766,46 @@ export default function App() {
   // OG i databasens RLS-policies).
   const [recipes, setRecipes] = useState([]);
   const loadRecipesFn = async () => { try { setRecipes(await loadRecipes()); } catch (e) {} };
+  // Vagtstempling — "activeShifts" (alle ÅBNE vagter lige nu) hentes for ALLE roller
+  // (bruges til ens egen status + "Hvem er på vagt nu"), samme rytme som
+  // lager/kasse osv. herunder. "shiftLog" (fuld historik) hentes derimod KUN når
+  // Vagt-fanen faktisk åbnes af ejer/manager (se useEffect ved "view" nedenfor) —
+  // ingen grund til at hive hele vagt-historikken hjem i baggrunden for alle.
+  const [activeShifts, setActiveShifts] = useState([]);
+  const loadActiveShiftsFn = async () => { try { setActiveShifts(await loadActiveShifts()); } catch (e) {} };
+  const [shiftLog, setShiftLog] = useState([]);
+  const [shiftLogLoading, setShiftLogLoading] = useState(false);
+  const [shiftErr, setShiftErr] = useState("");
+  const flashShiftErr = (msg) => {
+    setShiftErr(msg);
+    setTimeout(() => setShiftErr((cur) => (cur === msg ? "" : cur)), 8000);
+  };
+  const handleClockIn = async () => {
+    try { await sbClockIn(); await loadActiveShiftsFn(); }
+    catch (e) { flashShiftErr(e?.message || "Kunne ikke stemple ind."); }
+  };
+  const handleClockOut = async () => {
+    try { await sbClockOut(); await loadActiveShiftsFn(); }
+    catch (e) { flashShiftErr(e?.message || "Kunne ikke stemple ud."); }
+  };
+  const handleCloseShift = async (shift) => {
+    const ok = window.confirm(`Luk ${shift.name}s vagt (sæt ud-tid til nu)?`);
+    if (!ok) return;
+    try {
+      await sbCloseShift(shift.id);
+      await Promise.all([loadActiveShiftsFn(), refreshShiftLog()]);
+    } catch (e) { flashShiftErr(e?.message || "Kunne ikke lukke vagten."); }
+  };
+  const refreshShiftLog = async () => {
+    setShiftLogLoading(true);
+    try { setShiftLog(await loadShiftLog()); } catch (e) {} finally { setShiftLogLoading(false); }
+  };
+  const handleEditShift = async (shiftId, clockInMs, clockOutMs) => {
+    try {
+      await sbEditShift(shiftId, new Date(clockInMs).toISOString(), clockOutMs ? new Date(clockOutMs).toISOString() : null);
+      await Promise.all([loadActiveShiftsFn(), refreshShiftLog()]);
+    } catch (e) { flashShiftErr(e?.message || "Kunne ikke rette vagten."); }
+  };
   // Telefon-felt ved KUNDE-ID i Kassen. Slår gemt nummer op, når kunde-id'et ÆNDRES
   // (ikke når customerPhones i baggrunden genindlæses — ellers ville et pending baggrunds-
   // poll kunne overskrive noget, kassøren lige er i gang med at rette).
@@ -976,17 +1018,20 @@ export default function App() {
   const handleDeleteRecipe = async (id) => { await deleteRecipe(id); await loadRecipesFn(); };
 
   const editingRef = useRef(false);
-  useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); loadRecipesFn(); } }, [profile]);
+  useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); loadRecipesFn(); loadActiveShiftsFn(); } }, [profile]);
   useEffect(() => {
     if (!profile) return;
     const poll = setInterval(() => {
       // hent nye priser i baggrunden — men aldrig mens ejeren redigerer
-      if (!editingRef.current && document.visibilityState === "visible") { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); loadRecipesFn(); }
+      if (!editingRef.current && document.visibilityState === "visible") { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); loadRecipesFn(); loadActiveShiftsFn(); }
     }, 12000);
-    const onVis = () => { if (document.visibilityState === "visible" && !editingRef.current) { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); loadRecipesFn(); } };
+    const onVis = () => { if (document.visibilityState === "visible" && !editingRef.current) { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); loadRecipesFn(); loadActiveShiftsFn(); } };
     document.addEventListener("visibilitychange", onVis);
     return () => { clearInterval(poll); document.removeEventListener("visibilitychange", onVis); };
   }, [profile]);
+  // Vagtlog/rapporten hentes først, når ejer/manager rent faktisk åbner Vagt-fanen —
+  // ikke i baggrunds-pollet ovenfor, som kører for alle roller.
+  useEffect(() => { if (view === "vagt" && canManageStore) refreshShiftLog(); }, [view, canManageStore]);
 
   const saveConfig = async (next) => {
     const prev = config;
@@ -1321,6 +1366,11 @@ export default function App() {
             style={view === "crafting" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
             <Hammer size={16} /> Crafting
           </button>
+          <button onClick={() => { setView(view === "vagt" ? "beregner" : "vagt"); setShowSettings(false); }}
+            className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
+            style={view === "vagt" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+            <Clock size={16} /> Vagt
+          </button>
           {isOwner && (
             <button onClick={() => { setView(view === "ansatte" ? "beregner" : "ansatte"); setShowSettings(false); }}
               className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
@@ -1404,6 +1454,11 @@ export default function App() {
         <TopMarginItems sales={sales} config={config} cur={cur} wide={wide} />
       ) : view === "stamkunder" && !showSettings ? (
         <TopCustomers sales={sales} config={config} cur={cur} wide={wide} />
+      ) : view === "vagt" && !showSettings ? (
+        <ShiftView profile={profile} activeShifts={activeShifts} shiftLog={shiftLog} shiftLogLoading={shiftLogLoading}
+          canManageStore={canManageStore} isOwner={isOwner} wide={wide} err={shiftErr}
+          onClockIn={handleClockIn} onClockOut={handleClockOut}
+          onCloseShift={handleCloseShift} onEditShift={handleEditShift} />
       ) : showSettings ? (
         <PriceSettings config={config} save={saveConfig} close={() => { setShowSettings(false); editingRef.current = false; }} wide={wide}
           visibility={materialVisibility} onTogglePublic={handleTogglePublic}
@@ -3179,6 +3234,196 @@ function SalesLog({ sales, cur, wide, onClear, onReverse, onEditCustomer, onEdit
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/* ── Vagtstempling ── Status ligger i "shifts"-tabellen i databasen (se
+   14-shifts.sql og loadActiveShifts/loadShiftLog i supabase-store.js), ikke kun i
+   denne komponents lokale state — den holder derfor ved genindlæsning og går igen
+   på tværs af enheder. "Hvem er på vagt nu" (activeShifts) er synlig for ALLE
+   roller; den fulde vagtlog/rapport (shiftLog, med periode-filter — samme
+   dag/7 dage/30 dage/alt-mønster som Dagbogen ovenfor) og Ret/Luk-vagt er kun
+   for hhv. ejer+manager og ejer, samme rolle-tjek som databasens RLS/RPC'er
+   allerede håndhæver (se canManageStore/isOwner i App). */
+function ShiftView({ profile, activeShifts, shiftLog, shiftLogLoading, canManageStore, isOwner, wide, err, onClockIn, onClockOut, onCloseShift, onEditShift }) {
+  const dk = wide;
+  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const sub = dk ? "#9ca3af" : "#78716c";
+  const [period, setPeriod] = useState("dag"); // dag | uge | måned | alt — samme som Dagbog
+  const [busy, setBusy] = useState(false);
+  const [editingId, setEditingId] = useState(null);
+
+  const myShift = activeShifts.find((s) => s.userId === profile.id);
+
+  const doClockIn = async () => { setBusy(true); try { await onClockIn(); } finally { setBusy(false); } };
+  const doClockOut = async () => { setBusy(true); try { await onClockOut(); } finally { setBusy(false); } };
+
+  const now = Date.now();
+  const cutoff = period === "dag" ? new Date().setHours(0, 0, 0, 0)
+    : period === "uge" ? now - 7 * 86400000
+    : period === "måned" ? now - 30 * 86400000
+    : 0;
+  const inPeriod = shiftLog.filter((s) => s.clockIn >= cutoff);
+
+  const perEmployee = {};
+  inPeriod.forEach((s) => {
+    if (!perEmployee[s.userId]) perEmployee[s.userId] = { name: s.name, count: 0, ms: 0 };
+    perEmployee[s.userId].count += 1;
+    perEmployee[s.userId].ms += (s.clockOut || now) - s.clockIn;
+  });
+  const empRows = Object.values(perEmployee).sort((a, b) => b.ms - a.ms);
+  const fmtDur = (ms) => {
+    const totalMin = Math.max(0, Math.round(ms / 60000));
+    return `${Math.floor(totalMin / 60)}t ${totalMin % 60}m`;
+  };
+  const fmtHM = (ms) => new Date(ms).toTimeString().slice(0, 5);
+
+  return (
+    <div className={"pb-10 " + (dk ? "px-8 pt-6 mx-auto text-white" : "px-3 pt-3")} style={dk ? { maxWidth: 900 } : {}}>
+      {err && (
+        <div className="mb-3 px-3 py-2 rounded-lg text-sm font-bold" style={{ background: "rgba(192,57,43,.15)", color: RED }}>{err}</div>
+      )}
+
+      <div className="rounded-xl border p-4 mb-3 flex items-center justify-between gap-3 flex-wrap" style={box}>
+        <div>
+          <div className="text-xs font-black uppercase tracking-wider mb-1" style={{ color: dk ? GOLD : BLUE }}>Din vagt</div>
+          {myShift ? (
+            <div className="text-sm font-bold" style={{ color: dk ? "#4ade80" : GREEN }}>● På vagt siden kl. {fmtHM(myShift.clockIn)}</div>
+          ) : (
+            <div className="text-sm" style={{ color: sub }}>Ikke på vagt</div>
+          )}
+        </div>
+        {myShift ? (
+          <button disabled={busy} onClick={doClockOut} className="px-4 py-2.5 rounded-full font-black text-sm"
+            style={{ background: RED, color: "white", opacity: busy ? .6 : 1 }}>Stempl ud</button>
+        ) : (
+          <button disabled={busy} onClick={doClockIn} className="px-4 py-2.5 rounded-full font-black text-sm"
+            style={{ background: GREEN, color: "white", opacity: busy ? .6 : 1 }}>Stempl ind</button>
+        )}
+      </div>
+
+      <div className="rounded-xl border p-4 mb-3" style={box}>
+        <div className="text-xs font-black uppercase tracking-wider mb-2" style={{ color: dk ? GOLD : BLUE }}>
+          Hvem er på vagt nu ({activeShifts.length})
+        </div>
+        {activeShifts.length === 0 ? (
+          <div className="text-sm" style={{ color: sub }}>Ingen på vagt lige nu.</div>
+        ) : (
+          <div className="space-y-1.5">
+            {activeShifts.map((s) => (
+              <div key={s.id} className="flex items-center justify-between text-sm">
+                <span style={{ color: dk ? "white" : INK, fontWeight: s.userId === profile.id ? 700 : 400 }}>
+                  {s.name}{s.userId === profile.id ? " (dig)" : ""}
+                </span>
+                <span style={{ color: sub }}>siden kl. {fmtHM(s.clockIn)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {canManageStore && (
+        <>
+          <div className="flex rounded-lg overflow-hidden border text-xs font-black mb-3" style={{ borderColor: dk ? "#3a3a3a" : "#d6d3d1" }}>
+            {[["dag", "I dag"], ["uge", "7 dage"], ["måned", "30 dage"], ["alt", "Alt"]].map(([v, l]) => (
+              <button key={v} onClick={() => setPeriod(v)} className="flex-1 py-2"
+                style={period === v ? { background: GOLD, color: INK } : { background: dk ? PANEL : "white", color: sub }}>{l}</button>
+            ))}
+          </div>
+
+          <div className="text-xs font-black uppercase tracking-wider mb-2" style={{ color: dk ? GOLD : BLUE }}>Pr. medarbejder</div>
+          {shiftLogLoading ? (
+            <div className="text-sm py-4 text-center" style={{ color: sub }}>Henter…</div>
+          ) : empRows.length === 0 ? (
+            <div className="text-sm py-4 text-center mb-2" style={{ color: sub }}>Ingen vagter i denne periode.</div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-4">
+              {empRows.map((r) => (
+                <div key={r.name} className="rounded-xl border p-3 flex items-center justify-between" style={box}>
+                  <span className="font-bold" style={{ color: dk ? "white" : INK }}>{r.name}</span>
+                  <span className="text-sm" style={{ color: sub }}>{r.count} vagt{r.count === 1 ? "" : "er"} · {fmtDur(r.ms)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="text-xs font-black uppercase tracking-wider mb-2" style={{ color: dk ? GOLD : BLUE }}>Vagter i perioden</div>
+          {!shiftLogLoading && inPeriod.length === 0 && (
+            <div className="text-sm py-6 text-center" style={{ color: sub }}>Ingen vagter i denne periode.</div>
+          )}
+          <div className="space-y-2">
+            {inPeriod.map((s) => (
+              <ShiftLogRow key={s.id} shift={s} dk={dk} box={box} sub={sub} isOwner={isOwner}
+                editing={editingId === s.id} onStartEdit={() => setEditingId(s.id)} onCancelEdit={() => setEditingId(null)}
+                onCloseShift={onCloseShift}
+                onSaveEdit={async (ci, co) => { await onEditShift(s.id, ci, co); setEditingId(null); }} />
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// En enkelt vagt i rapporten — "Ret" (ejer) åbner to dato/tid-felter og gemmer via
+// edit_shift (retter BÅDE ind- og ud-tid atomisk i databasen); "Luk vagt" (ejer) sætter
+// blot ud-tiden til nu på en glemt, stadig åben vagt, via close_shift.
+function ShiftLogRow({ shift, dk, box, sub, isOwner, editing, onStartEdit, onCancelEdit, onSaveEdit, onCloseShift }) {
+  const toLocalInput = (ms) => {
+    const d = new Date(ms - new Date(ms).getTimezoneOffset() * 60000);
+    return d.toISOString().slice(0, 16);
+  };
+  const [ciVal, setCiVal] = useState(toLocalInput(shift.clockIn));
+  const [coVal, setCoVal] = useState(shift.clockOut ? toLocalInput(shift.clockOut) : "");
+
+  const isOpen = !shift.clockOut;
+  const durMin = Math.max(0, Math.round(((shift.clockOut || Date.now()) - shift.clockIn) / 60000));
+  const durTxt = `${Math.floor(durMin / 60)}t ${durMin % 60}m`;
+  const inputStyle = { borderColor: dk ? "#3a3a3a" : "#d6d3d1", background: dk ? "#141414" : "white", color: dk ? "white" : INK };
+
+  return (
+    <div className="rounded-xl border p-3" style={box}>
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <div className="font-bold" style={{ color: dk ? "white" : INK }}>{shift.name}</div>
+          <div className="text-xs" style={{ color: sub }}>
+            {new Date(shift.clockIn).toLocaleDateString("da-DK")} · {new Date(shift.clockIn).toTimeString().slice(0, 5)}
+            {" → "}
+            {isOpen ? <span style={{ color: dk ? "#facc15" : "#b45309", fontWeight: 700 }}>pågår</span> : new Date(shift.clockOut).toTimeString().slice(0, 5)}
+            {" · "}{durTxt}
+          </div>
+        </div>
+        {isOwner && !editing && (
+          <div className="flex items-center gap-2">
+            {isOpen && (
+              <button onClick={() => onCloseShift(shift)} className="text-[11px] font-bold px-2 py-1 rounded-md"
+                style={{ color: dk ? "#facc15" : "#b45309", background: dk ? "rgba(250,204,21,.12)" : "#fdf6e3" }}>Luk vagt</button>
+            )}
+            <button onClick={onStartEdit} className="text-[11px] font-bold px-2 py-1 rounded-md flex items-center gap-1"
+              style={{ color: dk ? GOLD : BLUE, background: dk ? "rgba(245,179,1,.12)" : BLUE_T }}>
+              <Pencil size={11} /> Ret
+            </button>
+          </div>
+        )}
+      </div>
+      {editing && (
+        <div className="mt-3 pt-3 flex flex-wrap items-end gap-2" style={{ borderTop: `1px solid ${dk ? "#2a2a2a" : "#f0efed"}` }}>
+          <div>
+            <div className="text-[10px] uppercase font-bold mb-1" style={{ color: sub }}>Ind</div>
+            <input type="datetime-local" value={ciVal} onChange={(e) => setCiVal(e.target.value)}
+              className="rounded-lg border px-2 py-1.5 text-sm" style={inputStyle} />
+          </div>
+          <div>
+            <div className="text-[10px] uppercase font-bold mb-1" style={{ color: sub }}>Ud</div>
+            <input type="datetime-local" value={coVal} onChange={(e) => setCoVal(e.target.value)}
+              className="rounded-lg border px-2 py-1.5 text-sm" style={inputStyle} />
+          </div>
+          <button onClick={() => onSaveEdit(new Date(ciVal).getTime(), coVal ? new Date(coVal).getTime() : null)}
+            className="px-3 py-1.5 rounded-full font-black text-xs" style={{ background: GOLD, color: INK }}>Gem</button>
+          <button onClick={onCancelEdit} className="px-3 py-1.5 rounded-full font-black text-xs" style={{ background: dk ? "#2a2a2a" : "#f0efed", color: sub }}>Annuller</button>
+        </div>
+      )}
     </div>
   );
 }

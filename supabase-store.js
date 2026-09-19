@@ -370,4 +370,68 @@ export async function deleteRecipe(id) {
   if (error) throw error;
 }
 
+// ---- Vagtstempling (clock in/out) ----
+// Status ligger i "shifts"-tabellen i databasen (se 14-shifts.sql), ikke kun
+// lokalt i appen — den holder derfor ved genindlæsning og går igen på tværs
+// af enheder. AL skrivning sker via de sikre RPC-funktioner herunder
+// (clock_in/clock_out/close_shift/edit_shift — alle "security definer" med
+// public/anon-adgang eksplicit fjernet i SQL'en) — aldrig direkte INSERT/
+// UPDATE på tabellen, som RLS'en også ville afvise, hvis man prøvede.
+function mapShiftRow(row) {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.profiles?.name || "Ukendt",
+    clockIn: new Date(row.clock_in).getTime(),
+    clockOut: row.clock_out ? new Date(row.clock_out).getTime() : null,
+  };
+}
+// Alle ÅBNE vagter lige nu (ingen ud-tid endnu). Bruges til BÅDE "er jeg på
+// vagt selv" (find egen række på user_id) og "Hvem er på vagt nu"-listen —
+// synlig for alle indloggede (RLS: "authenticated read active shifts").
+export async function loadActiveShifts() {
+  const { data, error } = await supabase
+    .from("shifts").select("id, user_id, clock_in, clock_out, profiles(name)")
+    .is("clock_out", null).order("clock_in");
+  if (error) throw error;
+  return (data || []).map(mapShiftRow);
+}
+// Fuld vagtlog (åbne OG lukkede vagter) — kun ejer/manager kan læse den
+// (RLS: "manager read all shifts"); en almindelig "ansat" får blot en tom
+// liste tilbage her (RLS filtrerer rækkerne væk), ikke en fejl.
+export async function loadShiftLog() {
+  const { data, error } = await supabase
+    .from("shifts").select("id, user_id, clock_in, clock_out, profiles(name)")
+    .order("clock_in", { ascending: false });
+  if (error) throw error;
+  return (data || []).map(mapShiftRow);
+}
+// Stempler DEN INDLOGGEDE bruger ind. Databasen forhindrer dobbelt-vagt
+// atomisk (unikt index på "kun én åben vagt pr. bruger") — se clock_in() i
+// 14-shifts.sql.
+export async function clockIn() {
+  const { error } = await supabase.rpc("clock_in");
+  if (error) throw error;
+}
+// Stempler DEN INDLOGGEDE bruger ud af sin egen åbne vagt.
+export async function clockOut() {
+  const { error } = await supabase.rpc("clock_out");
+  if (error) throw error;
+}
+// Lukker en glemt vagt ved at sætte ud-tid (default: nu) — KUN ejer, tjekket
+// i selve databasen (se close_shift i 14-shifts.sql), ikke kun i UI'en.
+export async function closeShift(shiftId, clockOutIso) {
+  const { error } = await supabase.rpc("close_shift", {
+    p_shift_id: shiftId, p_clock_out: clockOutIso || new Date().toISOString(),
+  });
+  if (error) throw error;
+}
+// Retter ind- og ud-tid på en vagt — KUN ejer, tjekket i databasen.
+export async function editShift(shiftId, clockInIso, clockOutIso) {
+  const { error } = await supabase.rpc("edit_shift", {
+    p_shift_id: shiftId, p_clock_in: clockInIso, p_clock_out: clockOutIso || null,
+  });
+  if (error) throw error;
+}
+
 export const supabaseReady = true;
