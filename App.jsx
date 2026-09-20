@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, ChevronDown, Lock, Package, ArrowLeftRight, Home, Camera, Hammer, Trophy, TrendingUp, Star, Pencil, Download, Wallet, Activity } from "lucide-react";
+import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, ChevronDown, Lock, Package, ArrowLeftRight, Home, Camera, Hammer, Trophy, TrendingUp, Star, Pencil, Download, Wallet, Activity, Megaphone } from "lucide-react";
 import {
   loadConfig, saveConfig as sbSaveConfig, loadSales as sbLoadSales, insertSale, logEvent,
   signIn, signOut, getSession, onAuthChange, loadMyProfile, loadAllProfiles,
@@ -15,6 +15,7 @@ import {
   loadActiveShifts, loadShiftLog, clockIn as sbClockIn, clockOut as sbClockOut,
   closeShift as sbCloseShift, editShift as sbEditShift,
   loadActivityLog,
+  loadBulletinPosts, createBulletinPost as sbCreateBulletinPost, deleteBulletinPost as sbDeleteBulletinPost,
 } from "./supabase-store.js";
 
 /* ── Pawnshop-beregner ────────────────────────────────────────────
@@ -629,6 +630,93 @@ async function scanTrayImage(imgSrc, worker, materials, onProgress) {
    bruger PRÆCIS samme formel som Dagbogens "I dag"-visning (SalesLog nedenfor,
    inkl. at kun AVANCEN af skranke-varer tæller, ikke hele beløbet), så tallet
    altid stemmer med det, der allerede vises i Dagbogen. ── */
+/* ── Opslagstavle (interne beskeder til ledelsen → medarbejderne) ──
+   Øverst på Hjem, synlig for ALLE indloggede (kun læsning for "ansat"). Skrive/slette
+   er KUN ejer/manager — samme rolle-tjek (canManageStore) som andre følsomme
+   handlinger, håndhævet BÅDE her (knapperne vises slet ikke for "ansat") OG i
+   databasen (create_bulletin_post()/delete_bulletin_post(), se 20-bulletin-board.sql),
+   så en "ansat"-konto ikke kan skrive/slette et opslag ved et direkte DB-kald. Viser
+   kun de 5 seneste (hentet sådan i loadBulletinPosts). */
+function BulletinBoard({ posts, canManage, err, onCreate, onDelete, wide }) {
+  const dk = wide;
+  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const sub = dk ? "#9ca3af" : "#78716c";
+  const inputStyle = { borderColor: dk ? "#3a3a3a" : "#d6d3d1", background: dk ? "#141414" : "white", color: dk ? "white" : INK };
+  const [composing, setComposing] = useState(false);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [formErr, setFormErr] = useState("");
+
+  const submit = async () => {
+    const t = text.trim();
+    if (!t) return;
+    setBusy(true); setFormErr("");
+    try { await onCreate(t); setText(""); setComposing(false); }
+    catch (e) { setFormErr(e?.message || "Kunne ikke gemme opslaget."); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="rounded-xl border p-3" style={box}>
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-xs font-black uppercase tracking-widest flex items-center gap-1.5" style={{ color: dk ? GOLD : BLUE }}>
+          <Megaphone size={13} /> Opslagstavle
+        </div>
+        {canManage && !composing && (
+          <button onClick={() => setComposing(true)} className="text-[11px] font-bold px-2 py-1 rounded-md flex items-center gap-1"
+            style={{ color: dk ? GOLD : BLUE, background: dk ? "rgba(245,179,1,.12)" : BLUE_T }}>
+            <Plus size={12} /> Nyt opslag
+          </button>
+        )}
+      </div>
+
+      {err && <div className="text-[11px] font-semibold mb-2" style={{ color: RED }}>{err}</div>}
+
+      {composing && (
+        <div className="mb-3">
+          <textarea value={text} onChange={(e) => setText(e.target.value)} maxLength={500} rows={2} autoFocus
+            placeholder="Skriv en kort besked til medarbejderne…"
+            className="w-full rounded-lg border px-2.5 py-2 text-sm resize-none" style={inputStyle} />
+          {formErr && <div className="text-[11px] font-semibold mt-1" style={{ color: RED }}>{formErr}</div>}
+          <div className="flex items-center gap-2 mt-1.5">
+            <button disabled={busy || !text.trim()} onClick={submit}
+              className="px-3 py-1.5 rounded-full font-black text-xs disabled:opacity-50" style={{ background: GOLD, color: INK }}>
+              {busy ? "Opslår…" : "Opslå"}
+            </button>
+            <button onClick={() => { setComposing(false); setText(""); setFormErr(""); }}
+              className="px-3 py-1.5 rounded-full font-black text-xs" style={{ background: dk ? "#2a2a2a" : "#f0efed", color: sub }}>
+              Annuller
+            </button>
+          </div>
+        </div>
+      )}
+
+      {posts.length === 0 ? (
+        <div className="text-sm py-1" style={{ color: sub }}>Ingen opslag endnu.</div>
+      ) : (
+        <div className="space-y-1.5">
+          {posts.map((p) => (
+            <div key={p.id} className="rounded-lg px-2.5 py-2" style={{ background: dk ? "#141414" : "#fafaf9" }}>
+              <div className="flex items-start justify-between gap-2">
+                <div className="text-sm whitespace-pre-wrap" style={{ color: dk ? "white" : INK }}>{p.text}</div>
+                {canManage && (
+                  <button onClick={() => { if (window.confirm("Slet dette opslag?")) onDelete(p.id); }}
+                    className="shrink-0 p-1 rounded-md" style={{ color: dk ? "#f87171" : RED }} title="Slet opslag">
+                    <Trash2 size={13} />
+                  </button>
+                )}
+              </div>
+              <div className="text-[11px] mt-1" style={{ color: sub }}>
+                {p.author_name || "Ukendt"} · {fmtDateDK(new Date(p.at).getTime())} {fmtTimeDK(new Date(p.at).getTime())}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DailyOverview({ sales, materials, cash, cur, wide }) {
   const dk = wide;
   const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
@@ -782,6 +870,20 @@ export default function App() {
   // OG i databasens RLS-policies).
   const [recipes, setRecipes] = useState([]);
   const loadRecipesFn = async () => { try { setRecipes(await loadRecipes()); } catch (e) {} };
+  // Opslagstavle — de 5 seneste beskeder, hentes for ALLE roller (vises øverst på Hjem,
+  // se BulletinBoard). Oprette/slette er KUN ejer/manager, tjekket i databasen (se
+  // 20-bulletin-board.sql) — UI'en skjuler blot knapperne for "ansat".
+  const [bulletinPosts, setBulletinPosts] = useState([]);
+  const loadBulletinPostsFn = async () => { try { setBulletinPosts(await loadBulletinPosts()); } catch (e) {} };
+  const [bulletinErr, setBulletinErr] = useState("");
+  const handleCreateBulletinPost = async (text) => {
+    await sbCreateBulletinPost(text);
+    await loadBulletinPostsFn();
+  };
+  const handleDeleteBulletinPost = async (id) => {
+    try { await sbDeleteBulletinPost(id); await loadBulletinPostsFn(); }
+    catch (e) { setBulletinErr(e?.message || "Kunne ikke slette opslaget."); setTimeout(() => setBulletinErr(""), 5000); }
+  };
   // Vagtstempling — "activeShifts" (alle ÅBNE vagter lige nu) hentes for ALLE roller
   // (bruges til ens egen status + "Hvem er på vagt nu"), samme rytme som
   // lager/kasse osv. herunder. "shiftLog" (fuld historik) hentes derimod KUN når
@@ -1047,14 +1149,14 @@ export default function App() {
   const handleDeleteRecipe = async (id) => { await deleteRecipe(id); await loadRecipesFn(); };
 
   const editingRef = useRef(false);
-  useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); loadRecipesFn(); loadActiveShiftsFn(); } }, [profile]);
+  useEffect(() => { if (profile) { loadConfigFn(true); loadSalesFn(); refreshStaff(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); loadRecipesFn(); loadActiveShiftsFn(); loadBulletinPostsFn(); } }, [profile]);
   useEffect(() => {
     if (!profile) return;
     const poll = setInterval(() => {
       // hent nye priser i baggrunden — men aldrig mens ejeren redigerer
-      if (!editingRef.current && document.visibilityState === "visible") { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); loadRecipesFn(); loadActiveShiftsFn(); }
+      if (!editingRef.current && document.visibilityState === "visible") { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); loadRecipesFn(); loadActiveShiftsFn(); loadBulletinPostsFn(); }
     }, 12000);
-    const onVis = () => { if (document.visibilityState === "visible" && !editingRef.current) { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); loadRecipesFn(); loadActiveShiftsFn(); } };
+    const onVis = () => { if (document.visibilityState === "visible" && !editingRef.current) { loadConfigFn(false); loadSalesFn(); loadInventoryFn(); loadMaterialVisibilityFn(); loadMaterialImagesFn(); loadCashFn(); loadLeaderboardFn(); loadCustomerPhonesFn(); loadRecipesFn(); loadActiveShiftsFn(); loadBulletinPostsFn(); } };
     document.addEventListener("visibilitychange", onVis);
     return () => { clearInterval(poll); document.removeEventListener("visibilitychange", onVis); };
   }, [profile]);
@@ -1517,6 +1619,8 @@ export default function App() {
       ) : (
         <div className={wide ? "flex gap-5 px-8 pt-6 items-start" : "px-3 pt-3 space-y-2"}>
           <div className={wide ? "flex-1 min-w-0 space-y-3" : "space-y-2"}>
+          <BulletinBoard posts={bulletinPosts} canManage={canManageStore} err={bulletinErr} wide={wide}
+            onCreate={handleCreateBulletinPost} onDelete={handleDeleteBulletinPost} />
           <DailyOverview sales={sales} materials={materials} cash={cash} cur={cur} wide={wide} />
           {/* Samme "Din vagt"-kort som Vagt-fanen (ShiftStatusCard) — genbrug, ikke en ny
               mekanik. Placeret her, lige før kassen/Køb-Sælg-skiftet, så man ser det og
@@ -3935,6 +4039,8 @@ const ACTIVITY_LABELS = {
   staff_created: "Medarbejder oprettet",
   staff_updated: "Medarbejder rettet",
   staff_deleted: "Medarbejder slettet",
+  bulletin_post_created: "Opslag oprettet",
+  bulletin_post_deleted: "Opslag slettet",
 };
 // Bygger den korte "detaljer"-linje for én log-hændelse, ud fra dens gemte
 // "details"-jsonb (se hver funktions "perform log_activity(...)"-kald i
@@ -3978,6 +4084,10 @@ function describeActivity(e, cur) {
     }
     case "staff_deleted":
       return `${d.target_name || "?"} (rolle: ${d.role || "?"})`;
+    case "bulletin_post_created":
+      return `"${d.text || ""}"`;
+    case "bulletin_post_deleted":
+      return `"${d.text || ""}" (skrevet af ${d.author_name || "?"})`;
     default:
       return JSON.stringify(d);
   }

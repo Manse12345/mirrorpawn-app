@@ -309,6 +309,27 @@ export async function loadActivityLog(limit = 500) {
   return data || [];
 }
 
+// ---- Opslagstavle (interne beskeder til medarbejderne) — se 20-bulletin-board.sql ----
+// Alle indloggede kan læse (RLS: "authenticated read bulletin_posts"). Skrivning
+// (oprette/slette) sker KUN via de to sikre funktioner nedenfor — rolle-tjekket
+// (ejer/manager) sker i selve funktionen, ikke kun i UI'en; "bulletin_posts" har
+// ingen direkte klient-skrivevej overhovedet.
+export async function loadBulletinPosts(limit = 5) {
+  const { data, error } = await supabase
+    .from("bulletin_posts").select("*").order("at", { ascending: false }).limit(limit);
+  if (error) throw error;
+  return data || [];
+}
+export async function createBulletinPost(text) {
+  const { data, error } = await supabase.rpc("create_bulletin_post", { p_text: text });
+  if (error) throw error;
+  return data;
+}
+export async function deleteBulletinPost(id) {
+  const { error } = await supabase.rpc("delete_bulletin_post", { p_id: id });
+  if (error) throw error;
+}
+
 // ---- Leaderboard-konkurrence ----
 // Indstillinger (navn/periode/aktiv) styres af ejer/manager inde i appen — se
 // LeaderboardAdmin i App.jsx. RLS på "leaderboard"-tabellen tillader kun ejer/manager
