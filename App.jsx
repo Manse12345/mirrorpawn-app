@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, Lock, Package, ArrowLeftRight, Home, Camera, Hammer, Trophy, TrendingUp, Star, Pencil, Download } from "lucide-react";
+import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, Lock, Package, ArrowLeftRight, Home, Camera, Hammer, Trophy, TrendingUp, Star, Pencil, Download, Wallet } from "lucide-react";
 import {
   loadConfig, saveConfig as sbSaveConfig, loadSales as sbLoadSales, insertSale, logEvent,
   signIn, signOut, getSession, onAuthChange, loadMyProfile, loadAllProfiles,
@@ -1043,9 +1043,10 @@ export default function App() {
     document.addEventListener("visibilitychange", onVis);
     return () => { clearInterval(poll); document.removeEventListener("visibilitychange", onVis); };
   }, [profile]);
-  // Vagtlog/rapporten hentes først, når ejer/manager rent faktisk åbner Vagt-fanen —
-  // ikke i baggrunds-pollet ovenfor, som kører for alle roller.
-  useEffect(() => { if (view === "vagt" && canManageStore) refreshShiftLog(); }, [view, canManageStore]);
+  // Vagtlog/rapporten hentes først, når ejer/manager rent faktisk åbner Vagt-fanen
+  // eller Medarbejder-oversigten (som også bruger den, til at koble timer med
+  // handler) — ikke i baggrunds-pollet ovenfor, som kører for alle roller.
+  useEffect(() => { if ((view === "vagt" || view === "medarbejdere") && canManageStore) refreshShiftLog(); }, [view, canManageStore]);
 
   const saveConfig = async (next) => {
     const prev = config;
@@ -1392,6 +1393,13 @@ export default function App() {
               <Users size={16} /> Ansatte
             </button>
           )}
+          {canManageStore && (
+            <button onClick={() => { setView(view === "medarbejdere" ? "beregner" : "medarbejdere"); setShowSettings(false); }}
+              className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
+              style={view === "medarbejdere" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+              <Wallet size={16} /> Medarbejdere
+            </button>
+          )}
           {canViewLeaderboard && (
             <button onClick={() => { setView(view === "leaderboard" ? "beregner" : "leaderboard"); setShowSettings(false); }}
               className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
@@ -1455,6 +1463,8 @@ export default function App() {
           onCreateRecipe={handleCreateRecipe} onUpdateRecipe={handleUpdateRecipe} onDeleteRecipe={handleDeleteRecipe} />
       ) : view === "ansatte" && !showSettings && canManageStore ? (
         <StaffAdmin staffList={staffList} refresh={refreshStaff} myId={profile.id} wide={wide} canFullyManage={isOwner} />
+      ) : view === "medarbejdere" && !showSettings && canManageStore ? (
+        <StaffOverview sales={sales} shiftLog={shiftLog} shiftLogLoading={shiftLogLoading} staffList={staffList} cur={cur} wide={wide} />
       ) : view === "leaderboard" && !showSettings && canViewLeaderboard ? (
         <LeaderboardAdmin sales={sales} cur={cur} wide={wide} settings={lbSettings} canManage={canManageStore}
           onSave={async (patch) => {
@@ -3658,6 +3668,161 @@ function ShiftExport({ staffList, shiftLog, shiftLogLoading, dk, box, sub }) {
             <span style={{ color: dk ? GOLD : GOLD_D }}>Total: {fmtDuration(totalMs)} timer</span>
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+/* ── Medarbejder-oversigt (kun ejer/manager — se canManageStore-tjekket i App, som er
+   den ENESTE, der renderer denne komponent) ──
+   Sammenholder vagttimer med handler PR. MEDARBEJDER, til brug for løn/bonus. Ren
+   visning + CSV-eksport, samme mønster som ShiftExport ovenfor — INGEN skrivning
+   nogen steder, kan aldrig ændre en vagt, en handel, kassen eller lageret. Læser
+   udelukkende data der allerede er hentet i App: "sales" (RLS: "authenticated read
+   sales" — alle handler, uanset rolle) og "shiftLog" (RLS: "manager read all
+   shifts" — kun ejer/manager, se 14-shifts.sql). Ingen nye databasekald.
+
+   "Handler i alt" tæller køb OG salg for medarbejderen — matchet via sellerId
+   (= profile.id for den, der var logget ind, da handlen blev gemt, se
+   beginSaveTrade). "Avance/overskud" er summen af sales.profit i perioden, som
+   allerede er korrekt beregnet for BÅDE køb og salg ved selve handlen (modsat
+   Top-varer-siden, der estimerer ud fra NUVÆRENDE priser) — her er tallet derfor
+   det faktiske, historiske overskud, ikke et estimat. "Timer på vagt" tæller kun
+   AFSLUTTEDE vagter (clock_out sat) — en vagt, der stadig pågår, tæller ikke med
+   endnu, som ønsket. */
+function StaffOverview({ sales, shiftLog, shiftLogLoading, staffList, cur, wide }) {
+  const dk = wide;
+  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const sub = dk ? "#9ca3af" : "#78716c";
+  const todayStr = () => new Date().toISOString().slice(0, 10);
+  const monthAgoStr = () => new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const [fromDate, setFromDate] = useState(monthAgoStr());
+  const [toDate, setToDate] = useState(todayStr());
+  const [sortBy, setSortBy] = useState("profit"); // profit | perHour
+
+  const inputStyle = { borderColor: dk ? "#3a3a3a" : "#d6d3d1", background: dk ? "#141414" : "white", color: dk ? "white" : INK };
+  // "t:mm" (timer:minutter) — samme format som ShiftExport, for genkendelighed.
+  const fmtDuration = (ms) => {
+    const totalMin = Math.max(0, Math.round(ms / 60000));
+    return `${Math.floor(totalMin / 60)}:${String(totalMin % 60).padStart(2, "0")}`;
+  };
+
+  // "Fra"/"Til" tolkes som HELE dage i lokal tid — samme konvention som ShiftExport,
+  // så de to sider altid stemmer overens ved samme valgte periode.
+  const fromMs = fromDate ? new Date(fromDate + "T00:00:00").getTime() : -Infinity;
+  const toMs = toDate ? new Date(toDate + "T23:59:59.999").getTime() : Infinity;
+
+  const rows = staffList.map((p) => {
+    const shifts = shiftLog.filter((s) => s.userId === p.id && s.clockOut != null && s.clockIn >= fromMs && s.clockIn <= toMs);
+    const hoursMs = shifts.reduce((a, s) => a + (s.clockOut - s.clockIn), 0);
+    const hoursDecimal = hoursMs / 3600000;
+
+    const trades = sales.filter((t) => t.sellerId === p.id && t.at >= fromMs && t.at <= toMs);
+    const revenue = trades.filter((t) => t.type === "sell").reduce((a, t) => a + t.total, 0);
+    const purchases = trades.filter((t) => t.type === "buy").reduce((a, t) => a + t.total, 0);
+    const profit = trades.reduce((a, t) => a + t.profit, 0);
+    const perHour = hoursDecimal > 0 ? profit / hoursDecimal : null;
+
+    return { id: p.id, name: p.name, hoursMs, tradeCount: trades.length, revenue, purchases, profit, perHour };
+  }).sort((a, b) => sortBy === "perHour"
+    ? (b.perHour ?? -Infinity) - (a.perHour ?? -Infinity)
+    : b.profit - a.profit
+  );
+
+  const totals = rows.reduce((a, r) => ({
+    hoursMs: a.hoursMs + r.hoursMs, tradeCount: a.tradeCount + r.tradeCount,
+    revenue: a.revenue + r.revenue, purchases: a.purchases + r.purchases, profit: a.profit + r.profit,
+  }), { hoursMs: 0, tradeCount: 0, revenue: 0, purchases: 0, profit: 0 });
+  const totalHoursDecimal = totals.hoursMs / 3600000;
+  const totalPerHour = totalHoursDecimal > 0 ? totals.profit / totalHoursDecimal : null;
+
+  const exportCsv = () => {
+    const sep = ";"; // Danske Excel-opsætninger bruger typisk semikolon som listeseparator
+    const esc = (v) => `"${String(v).replace(/"/g, '""')}"`;
+    const line = (cols) => cols.map(esc).join(sep);
+    const lines = [
+      line(["Medarbejder", "Timer på vagt (t:mm)", "Handler i alt", "Omsætning", "Indkøb", "Avance/overskud", "Avance pr. time"]),
+      ...rows.map((r) => line([
+        r.name, fmtDuration(r.hoursMs), r.tradeCount, fmt(r.revenue), fmt(r.purchases), fmt(r.profit),
+        r.perHour == null ? "-" : fmt(r.perHour),
+      ])),
+      line(["Total", fmtDuration(totals.hoursMs), totals.tradeCount, fmt(totals.revenue), fmt(totals.purchases), fmt(totals.profit),
+        totalPerHour == null ? "-" : fmt(totalPerHour)]),
+    ];
+    // ﻿ (BOM) sikrer at æ/ø/å vises korrekt, når filen åbnes direkte i Excel.
+    const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `medarbejderoversigt_${fromDate || "start"}_${toDate || "slut"}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className={"pb-10 " + (dk ? "px-8 pt-6 mx-auto text-white" : "px-3 pt-3")} style={dk ? { maxWidth: PAGE_MAX } : {}}>
+      <div className="text-xs font-black uppercase tracking-wider mb-1" style={{ color: dk ? GOLD : BLUE }}>Medarbejder-oversigt</div>
+      <div className="text-[11px] mb-3" style={{ color: sub }}>
+        Timer på vagt holdt op mod handler og avance, pr. medarbejder — til løn og bonus. Kun læsning; ændrer intet.
+      </div>
+
+      <div className="flex flex-wrap items-end gap-3 mb-4">
+        <div>
+          <div className="text-[10px] uppercase font-bold mb-1" style={{ color: sub }}>Fra dato</div>
+          <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)}
+            className="rounded-lg border px-2 py-1.5 text-sm" style={inputStyle} />
+        </div>
+        <div>
+          <div className="text-[10px] uppercase font-bold mb-1" style={{ color: sub }}>Til dato</div>
+          <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)}
+            className="rounded-lg border px-2 py-1.5 text-sm" style={inputStyle} />
+        </div>
+        <div className="flex rounded-lg overflow-hidden border text-xs font-black" style={{ borderColor: dk ? "#3a3a3a" : "#d6d3d1" }}>
+          {[["profit", "Avance"], ["perHour", "Avance/time"]].map(([v, l]) => (
+            <button key={v} onClick={() => setSortBy(v)} className="px-3 py-2"
+              style={sortBy === v ? { background: GOLD, color: INK } : { background: dk ? PANEL : "white", color: sub }}>{l}</button>
+          ))}
+        </div>
+        <button onClick={exportCsv} disabled={rows.length === 0}
+          className="flex items-center gap-1.5 px-4 py-2 rounded-full font-black text-sm disabled:opacity-50 ml-auto"
+          style={{ background: GOLD, color: INK }}>
+          <Download size={15} /> Eksportér (CSV)
+        </button>
+      </div>
+
+      {shiftLogLoading ? (
+        <div className="text-sm py-6 text-center" style={{ color: sub }}>Henter…</div>
+      ) : rows.length === 0 ? (
+        <div className="text-sm py-6 text-center" style={{ color: sub }}>Ingen medarbejdere fundet.</div>
+      ) : (
+        <div className="space-y-2 mb-4">
+          {rows.map((r) => (
+            <div key={r.id} className="rounded-xl border p-3" style={box}>
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-bold" style={{ color: dk ? "white" : INK }}>{r.name}</span>
+                <span className="font-black tabular-nums" style={{ color: r.profit >= 0 ? (dk ? "#4ade80" : GREEN) : (dk ? "#f87171" : RED) }}>
+                  {fmt(r.profit)} {cur}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]" style={{ color: sub }}>
+                <div>Timer på vagt: <span className="font-bold tabular-nums" style={{ color: dk ? "white" : INK }}>{fmtDuration(r.hoursMs)}</span></div>
+                <div>Handler i alt: <span className="font-bold tabular-nums" style={{ color: dk ? "white" : INK }}>{r.tradeCount}</span></div>
+                <div>Omsætning: <span className="font-bold tabular-nums" style={{ color: dk ? "white" : INK }}>{fmt(r.revenue)} {cur}</span></div>
+                <div>Indkøb: <span className="font-bold tabular-nums" style={{ color: dk ? "white" : INK }}>{fmt(r.purchases)} {cur}</span></div>
+                <div className="col-span-2">Avance pr. time: <span className="font-black tabular-nums" style={{ color: dk ? GOLD : GOLD_D }}>{r.perHour == null ? "-" : `${fmt(r.perHour)} ${cur}/t`}</span></div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {rows.length > 0 && (
+        <div className="flex items-center justify-between pt-2 font-black text-sm flex-wrap gap-1" style={{ borderTop: `2px solid ${dk ? "#333" : "#e7e5e4"}` }}>
+          <span style={{ color: dk ? "white" : INK }}>{rows.length} medarbejder{rows.length === 1 ? "" : "e"} · {fmtDuration(totals.hoursMs)} timer i alt</span>
+          <span style={{ color: dk ? GOLD : GOLD_D }}>
+            Total avance: {fmt(totals.profit)} {cur}{totalPerHour != null ? ` · ${fmt(totalPerHour)} ${cur}/t` : ""}
+          </span>
+        </div>
       )}
     </div>
   );
