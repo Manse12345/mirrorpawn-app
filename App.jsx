@@ -1457,9 +1457,10 @@ export default function App() {
   // beholderen udenom er forskellig), så der ikke er to steder at holde i sync.
   const sidebarContent = (
     <>
-      <button onClick={goHome} className="flex items-center gap-3 px-4 pt-5 pb-4 text-left w-full shrink-0" title="Til forsiden">
-        <img src="/logo.png" alt="Mirror Pawnshop" className="rounded-lg shrink-0 object-contain"
-          style={{ width: 40, height: 40 }} />
+      <button onClick={goHome} className="flex items-center gap-3.5 px-4 pt-5 pb-4 text-left w-full shrink-0" title="Til forsiden">
+        <span className="inline-flex items-center justify-center shrink-0" style={{ width: 44, height: 44 }}>
+          <img src="/logo.png" alt="Mirror Pawnshop" className="max-w-full max-h-full rounded-lg" style={{ objectFit: "contain" }} />
+        </span>
         <div className="min-w-0">
           <div className="uppercase tracking-widest font-bold text-[10px]" style={{ color: GOLD }}>Buy · Sell · Trade</div>
           <div className="font-black leading-tight text-white text-base truncate">{config.shopName}</div>
