@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import logo from "./logo.png";
 import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, ChevronDown, Lock, Package, ArrowLeftRight, Home, Camera, Hammer, Trophy, TrendingUp, TrendingDown, Star, Pencil, Download, Wallet, Activity, Megaphone, Menu } from "lucide-react";
 import {
   loadConfig, saveConfig as sbSaveConfig, loadSales as sbLoadSales, insertSale, logEvent,
@@ -1459,7 +1460,7 @@ export default function App() {
     <>
       <button onClick={goHome} className="flex items-center gap-3.5 px-4 pt-5 pb-4 text-left w-full shrink-0" title="Til forsiden">
         <span className="inline-flex items-center justify-center shrink-0 overflow-hidden rounded-lg" style={{ width: 38, height: 38 }}>
-          <img src="/logo.png" alt="Mirror Pawnshop" className="w-full h-full" style={{ objectFit: "contain" }} />
+          <img src={logo} alt="Mirror Pawnshop" className="w-full h-full" style={{ objectFit: "contain" }} />
         </span>
         <div className="min-w-0">
           <div className="uppercase tracking-widest font-bold text-[10px]" style={{ color: GOLD }}>Buy · Sell · Trade</div>
@@ -1626,7 +1627,7 @@ export default function App() {
               <Menu size={22} />
             </button>
             <span className="inline-flex items-center justify-center shrink-0 overflow-hidden rounded-lg ml-1" style={{ width: 36, height: 36 }}>
-              <img src="/logo.png" alt="Mirror Pawnshop" className="w-full h-full" style={{ objectFit: "contain" }} />
+              <img src={logo} alt="Mirror Pawnshop" className="w-full h-full" style={{ objectFit: "contain" }} />
             </span>
             <span className="font-black text-lg truncate ml-0.5">{config.shopName}</span>
           </div>
@@ -3016,7 +3017,7 @@ function LoginScreen({ username, setUsername, password, setPassword, err, busy, 
       <form onSubmit={(e) => { e.preventDefault(); onSubmit(); }} className="w-full max-w-xs rounded-2xl p-6" style={{ background: PANEL, border: "1px solid #333" }}>
         <div className="flex items-center justify-center mb-4">
           <span className="inline-flex items-center justify-center overflow-hidden rounded-lg" style={{ width: 40, height: 40 }}>
-            <img src="/logo.png" alt="Mirror Pawnshop" className="w-full h-full" style={{ objectFit: "contain" }} />
+            <img src={logo} alt="Mirror Pawnshop" className="w-full h-full" style={{ objectFit: "contain" }} />
           </span>
         </div>
         <div className="text-center uppercase tracking-widest font-bold text-[11px] mb-1" style={{ color: GOLD }}>Buy · Sell · Trade</div>
