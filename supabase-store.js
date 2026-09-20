@@ -45,13 +45,14 @@ export async function loadAllProfiles() {
   if (error) throw error;
   return data || [];
 }
-// Retter KUN "discord_id" (se 16-profiles-discord-id.sql) — ejer/manager, tjekket af
-// en RLS-policy PÅ RÆKKEN og af et kolonne-niveau-grant, der begrænser præcis denne
-// skrivevej til den ene kolonne. Går UDENOM manage-staff Edge Function med vilje —
-// den forbliver "kun ejer" og uændret; denne funktion rører aldrig navn/rolle/
-// username/kodeord, kun Discord-ID'et.
+// Retter KUN "discord_id", via den sikre set_discord_id()-funktion (security definer,
+// se 19-activity-log.sql) — ejer/manager-tjekket sker NU inde i selve funktionen, som
+// også logger ændringen til activity_log (gammelt → nyt Discord-ID). "profiles" har
+// ikke længere nogen direkte klient-skrivevej overhovedet. Går UDENOM manage-staff Edge
+// Function med vilje — den forbliver "kun ejer" og uændret; denne funktion rører aldrig
+// navn/rolle/username/kodeord, kun Discord-ID'et.
 export async function setDiscordId(userId, discordId) {
-  const { error } = await supabase.from("profiles").update({ discord_id: discordId || null }).eq("id", userId);
+  const { error } = await supabase.rpc("set_discord_id", { p_user_id: userId, p_discord_id: discordId || null });
   if (error) throw error;
 }
 
@@ -78,9 +79,13 @@ export async function loadConfig() {
   if (error) throw error;
   return data?.data ?? null;
 }
+// Gemmer via save_config() (security definer, se 19-activity-log.sql) i stedet for en
+// rå UPDATE — funktionen gør PRÆCIS det samme (gemmer "data" uændret), men
+// sammenligner først den gamle og nye "materials"-liste og logger pris-/salgspris-
+// ændringer og slettede varer til activity_log. Ejer/manager-tjekket sker nu inde i
+// funktionen; "config" har ikke længere nogen direkte klient-skrivevej.
 export async function saveConfig(data) {
-  const { error } = await supabase
-    .from("config").update({ data, updated_at: new Date().toISOString() }).eq("id", 1);
+  const { error } = await supabase.rpc("save_config", { p_data: data });
   if (error) throw error;
 }
 
@@ -105,12 +110,14 @@ export async function reverseSale(saleId) {
   if (error) throw error;
 }
 
-// Retter kunde-ID på en allerede gemt handel (fx glemt under selve handlen). Ren
-// tekst-opdatering — rører ALDRIG kasse eller lager. Kunde-point/handler-tæller er
-// udledt af salgshistorikken (se loadSales ovenfor), så handlen tæller automatisk
-// med for den NYE kunde, som om den havde været der fra start.
+// Retter kunde-ID på en allerede gemt handel (fx glemt under selve handlen), via
+// update_sale_customer() (security definer, se 19-activity-log.sql) i stedet for en rå
+// UPDATE — ren tekst-opdatering, rører ALDRIG kasse eller lager, men logger nu
+// gammelt → nyt kunde-ID til activity_log. Kunde-point/handler-tæller er udledt af
+// salgshistorikken (se loadSales ovenfor), så handlen tæller automatisk med for den
+// NYE kunde, som om den havde været der fra start.
 export async function updateSaleCustomer(saleId, custId) {
-  const { error } = await supabase.from("sales").update({ cust_id: custId || null }).eq("id", saleId);
+  const { error } = await supabase.rpc("update_sale_customer", { p_sale_id: saleId, p_cust_id: custId || null });
   if (error) throw error;
 }
 
@@ -123,12 +130,14 @@ export async function editSaleAmount(saleId, newTotal) {
   const { error } = await supabase.rpc("edit_sale_amount", { p_sale_id: saleId, p_new_total: newTotal });
   if (error) throw error;
 }
-// Sletter en kunde ved at slette alle dennes handler (kunder er udledt af salgshistorikken)
+// Sletter en kunde ved at slette alle dennes handler (kunder er udledt af
+// salgshistorikken), via delete_customer() (security definer, se
+// 19-activity-log.sql) — sletter STADIG det samme som før (handler + evt. gemt
+// telefonnummer), nu atomisk i én transaktion, og logger antallet af slettede
+// handler til activity_log.
 export async function deleteCustomer(custId) {
-  const { error } = await supabase.from("sales").delete().eq("cust_id", custId);
+  const { error } = await supabase.rpc("delete_customer", { p_cust_id: custId });
   if (error) throw error;
-  // Ryd et evt. gemt telefonnummer med — fejler stille, hvis der ikke var et.
-  try { await supabase.from("customers").delete().eq("id", custId); } catch (e) {}
 }
 
 // ---- Kunde-telefonnummer ----
@@ -279,12 +288,25 @@ export async function adjustCash(delta) {
   if (error) throw error;
   return +data;
 }
-// Sætter kassen direkte (bruges til at indtaste startbeløb)
+// Sætter kassen direkte (manuel rettelse, fx startbeløb eller optælling), via
+// set_cash_manual() (security definer, se 19-activity-log.sql) i stedet for en rå
+// upsert — logger gammelt → nyt beløb til activity_log. De AUTOMATISKE op-/nedtællinger
+// ved hver handel går fortsat via adjustCash()/adjust_cash() ovenfor, uændret og ulogget.
 export async function setCash(amount) {
-  const { error } = await supabase
-    .from("cash_balance")
-    .upsert({ id: 1, amount, updated_at: new Date().toISOString() });
+  const { error } = await supabase.rpc("set_cash_manual", { p_new_amount: amount });
   if (error) throw error;
+}
+
+// ---- Aktivitets-log (audit trail), KUN for ejer — se 19-activity-log.sql ----
+// RLS ("owner read activity_log") begrænser SELECT til rollen "ejer"; en anden rolle
+// får blot en tom liste tilbage her (RLS filtrerer rækkerne væk), ikke en fejl. Selve
+// linjerne skrives UDELUKKENDE server-side, inde i de relevante security definer-
+// funktioner (og Edge Function'en manage-staff) — aldrig herfra.
+export async function loadActivityLog(limit = 500) {
+  const { data, error } = await supabase
+    .from("activity_log").select("*").order("at", { ascending: false }).limit(limit);
+  if (error) throw error;
+  return data || [];
 }
 
 // ---- Leaderboard-konkurrence ----

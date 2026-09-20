@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, ChevronDown, Lock, Package, ArrowLeftRight, Home, Camera, Hammer, Trophy, TrendingUp, Star, Pencil, Download, Wallet } from "lucide-react";
+import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, ChevronDown, Lock, Package, ArrowLeftRight, Home, Camera, Hammer, Trophy, TrendingUp, Star, Pencil, Download, Wallet, Activity } from "lucide-react";
 import {
   loadConfig, saveConfig as sbSaveConfig, loadSales as sbLoadSales, insertSale, logEvent,
   signIn, signOut, getSession, onAuthChange, loadMyProfile, loadAllProfiles,
@@ -14,6 +14,7 @@ import {
   loadRecipes, createRecipe, updateRecipe, deleteRecipe,
   loadActiveShifts, loadShiftLog, clockIn as sbClockIn, clockOut as sbClockOut,
   closeShift as sbCloseShift, editShift as sbEditShift,
+  loadActivityLog,
 } from "./supabase-store.js";
 
 /* ── Pawnshop-beregner ────────────────────────────────────────────
@@ -821,6 +822,16 @@ export default function App() {
       await Promise.all([loadActiveShiftsFn(), refreshShiftLog()]);
     } catch (e) { flashShiftErr(e?.message || "Kunne ikke rette vagten."); }
   };
+  // Aktivitets-log (audit trail) — KUN ejer, se isOwner-tjekket i useEffect ved "view"
+  // nedenfor og RLS-policyen "owner read activity_log" i 19-activity-log.sql. Selve
+  // linjerne skrives udelukkende server-side (security definer-funktioner + Edge
+  // Function'en manage-staff) — denne funktion henter kun, skriver aldrig.
+  const [activityLog, setActivityLog] = useState([]);
+  const [activityLogLoading, setActivityLogLoading] = useState(false);
+  const refreshActivityLog = async () => {
+    setActivityLogLoading(true);
+    try { setActivityLog(await loadActivityLog()); } catch (e) {} finally { setActivityLogLoading(false); }
+  };
   // Telefon-felt ved KUNDE-ID i Kassen. Slår gemt nummer op, når kunde-id'et ÆNDRES
   // (ikke når customerPhones i baggrunden genindlæses — ellers ville et pending baggrunds-
   // poll kunne overskrive noget, kassøren lige er i gang med at rette).
@@ -1051,6 +1062,9 @@ export default function App() {
   // eller Medarbejder-oversigten (som også bruger den, til at koble timer med
   // handler) — ikke i baggrunds-pollet ovenfor, som kører for alle roller.
   useEffect(() => { if ((view === "vagt" || view === "medarbejdere") && canManageStore) refreshShiftLog(); }, [view, canManageStore]);
+  // Aktivitets-log hentes først, når ejeren rent faktisk åbner Aktivitet-fanen — kun
+  // ejer (isOwner), ikke manager, se RLS-policyen "owner read activity_log".
+  useEffect(() => { if (view === "aktivitet" && isOwner) refreshActivityLog(); }, [view, isOwner]);
 
   const saveConfig = async (next) => {
     const prev = config;
@@ -1411,6 +1425,13 @@ export default function App() {
               <Trophy size={16} /> Leaderboard
             </button>
           )}
+          {isOwner && (
+            <button onClick={() => { setView(view === "aktivitet" ? "beregner" : "aktivitet"); setShowSettings(false); }}
+              className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
+              style={view === "aktivitet" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+              <Activity size={16} /> Aktivitet
+            </button>
+          )}
           <button onClick={() => { setView(view === "log" ? "beregner" : "log"); setShowSettings(false); }}
             className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
             style={view === "log" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
@@ -1475,6 +1496,8 @@ export default function App() {
             setLbSettings((prev) => ({ ...(prev || {}), ...patch }));
             await saveLeaderboardSettings(patch);
           }} />
+      ) : view === "aktivitet" && !showSettings && isOwner ? (
+        <ActivityLogView entries={activityLog} loading={activityLogLoading} cur={cur} wide={wide} />
       ) : view === "log" && !showSettings ? (
         <SalesLog sales={sales} cur={cur} wide={wide} onClear={() => { if (isOwner) saveSales([]); }} role={profile.role}
           onReverse={handleReverseTrade} onEditCustomer={handleEditTradeCustomer} onEditAmount={handleEditTradeAmount} />
@@ -3890,6 +3913,183 @@ function StaffOverview({ sales, shiftLog, shiftLogLoading, staffList, cur, wide 
             Total avance: {fmt(totals.profit)} {cur}{totalPerHour != null ? ` · ${fmt(totalPerHour)} ${cur}/t` : ""}
           </span>
         </div>
+      )}
+    </div>
+  );
+}
+
+// Danske labels for hver "action"-værdi, der kan stå i activity_log.action (se
+// 19-activity-log.sql — det er UDELUKKENDE disse koder, security definer-funktionerne
+// og manage-staff Edge Function'en nogensinde skriver).
+const ACTIVITY_LABELS = {
+  price_changed: "Prisændring",
+  material_deleted: "Slettet vare",
+  cash_corrected: "Kasse rettet",
+  sale_reversed: "Handel fortrudt",
+  sale_amount_edited: "Beløb rettet",
+  sale_customer_edited: "Kunde-ID rettet",
+  customer_deleted: "Kunde slettet",
+  shift_closed: "Vagt lukket",
+  shift_edited: "Vagt rettet",
+  discord_id_set: "Discord-ID sat",
+  staff_created: "Medarbejder oprettet",
+  staff_updated: "Medarbejder rettet",
+  staff_deleted: "Medarbejder slettet",
+};
+// Bygger den korte "detaljer"-linje for én log-hændelse, ud fra dens gemte
+// "details"-jsonb (se hver funktions "perform log_activity(...)"-kald i
+// 19-activity-log.sql for hvad hvert felt betyder).
+function describeActivity(e, cur) {
+  const d = e.details || {};
+  const dkTime = (iso) => (iso ? `${fmtDateDK(new Date(iso).getTime())} ${fmtTimeDK(new Date(iso).getTime())}` : "?");
+  switch (e.action) {
+    case "price_changed": {
+      const parts = [];
+      if (d.old_price !== undefined) parts.push(`Køb: ${fmt(d.old_price)} → ${fmt(d.new_price)} ${cur}`);
+      if (d.old_sell !== undefined) parts.push(`Salg: ${fmt(d.old_sell)} → ${fmt(d.new_sell)} ${cur}`);
+      return `${d.name || d.material_id || "?"} — ${parts.join(" · ")}`;
+    }
+    case "material_deleted":
+      return `${d.name || d.material_id || "?"}`;
+    case "cash_corrected":
+      return `${fmt(d.old_amount)} → ${fmt(d.new_amount)} ${cur}`;
+    case "sale_reversed":
+      return `Handel #${d.sale_id} (${d.type === "sell" ? "salg" : "køb"}${d.cust_id ? ", kunde " + d.cust_id : ""}) — ${fmt(d.total)} ${cur}, oprindelig sælger: ${d.seller_name || "?"}`;
+    case "sale_amount_edited":
+      return `Handel #${d.sale_id}${d.cust_id ? " (kunde " + d.cust_id + ")" : ""}: ${fmt(d.old_total)} → ${fmt(d.new_total)} ${cur}`;
+    case "sale_customer_edited":
+      return `Handel #${d.sale_id}: "${d.old_cust_id || "—"}" → "${d.new_cust_id || "—"}"`;
+    case "customer_deleted":
+      return `${d.cust_id} (${d.sales_deleted ?? 0} handler slettet)`;
+    case "shift_closed":
+      return `${d.target_name || "?"} — ud-tid sat til ${dkTime(d.clock_out)}`;
+    case "shift_edited":
+      return `${d.target_name || "?"} — ind: ${dkTime(d.old_clock_in)} → ${dkTime(d.new_clock_in)}, ud: ${d.old_clock_out ? dkTime(d.old_clock_out) : "pågår"} → ${d.new_clock_out ? dkTime(d.new_clock_out) : "pågår"}`;
+    case "discord_id_set":
+      return `${d.target_name || "?"}: "${d.old_discord_id || "—"}" → "${d.new_discord_id || "—"}"`;
+    case "staff_created":
+      return `${d.target_name || "?"} (rolle: ${d.role || "?"})`;
+    case "staff_updated": {
+      const bits = [];
+      if (d.new_name && d.new_name !== d.old_name) bits.push(`navn: "${d.old_name || "?"}" → "${d.new_name}"`);
+      if (d.new_role && d.new_role !== d.old_role) bits.push(`rolle: "${d.old_role || "?"}" → "${d.new_role}"`);
+      if (d.password_changed) bits.push("kodeord ændret");
+      return `${d.old_name || d.new_name || "?"} — ${bits.length ? bits.join(", ") : "ingen synlige ændringer"}`;
+    }
+    case "staff_deleted":
+      return `${d.target_name || "?"} (rolle: ${d.role || "?"})`;
+    default:
+      return JSON.stringify(d);
+  }
+}
+
+/* ── Aktivitets-log / audit trail (KUN ejer — se isOwner-tjekket i App, som er den
+   ENESTE, der renderer denne komponent) ──
+   Ren visning — INGEN redigering, sletning eller anden skrivning nogen steder. Selve
+   linjerne ("hvem"/"hvad"/"detaljer"/"hvornår") er allerede skrevet server-side, inde i
+   de relevante security definer-funktioner og manage-staff Edge Function'en (se
+   19-activity-log.sql) — denne komponent læser blot "entries" (hentet via
+   loadActivityLog i App, begrænset af RLS-policyen "owner read activity_log" til kun
+   rollen "ejer") og filtrerer/viser dem. Nyeste øverst (allerede sorteret sådan af
+   loadActivityLog). Genbruger periode-knapperne (I dag/7 dage/30 dage/Alt) + fra/til-
+   dato-vælgeren fra hhv. ShiftView og ShiftExport/StaffOverview ovenfor. */
+function ActivityLogView({ entries, loading, cur, wide }) {
+  const dk = wide;
+  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const sub = dk ? "#9ca3af" : "#78716c";
+  const inputStyle = { borderColor: dk ? "#3a3a3a" : "#d6d3d1", background: dk ? "#141414" : "white", color: dk ? "white" : INK };
+
+  const todayStr = () => new Date().toISOString().slice(0, 10);
+  const daysAgoStr = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
+  const [period, setPeriod] = useState("alt"); // dag | uge | måned | alt — kun til at fremhæve den aktive knap
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const [actorFilter, setActorFilter] = useState("alle");
+  const [actionFilter, setActionFilter] = useState("alle");
+
+  const applyPreset = (p) => {
+    setPeriod(p);
+    if (p === "dag") { const d = todayStr(); setFromDate(d); setToDate(d); }
+    else if (p === "uge") { setFromDate(daysAgoStr(7)); setToDate(todayStr()); }
+    else if (p === "måned") { setFromDate(daysAgoStr(30)); setToDate(todayStr()); }
+    else { setFromDate(""); setToDate(""); }
+  };
+
+  const fromMs = fromDate ? new Date(fromDate + "T00:00:00").getTime() : -Infinity;
+  const toMs = toDate ? new Date(toDate + "T23:59:59.999").getTime() : Infinity;
+
+  const withMs = entries.map((e) => ({ ...e, atMs: new Date(e.at).getTime() }));
+  const actorNames = [...new Set(withMs.map((e) => e.actor_name).filter(Boolean))].sort();
+  const actionsPresent = [...new Set(withMs.map((e) => e.action))];
+
+  const rows = withMs
+    .filter((e) => e.atMs >= fromMs && e.atMs <= toMs)
+    .filter((e) => actorFilter === "alle" || e.actor_name === actorFilter)
+    .filter((e) => actionFilter === "alle" || e.action === actionFilter);
+
+  return (
+    <div className={"pb-10 " + (dk ? "px-8 pt-6 mx-auto text-white" : "px-3 pt-3")} style={dk ? { maxWidth: PAGE_MAX } : {}}>
+      <div className="text-xs font-black uppercase tracking-wider mb-1" style={{ color: dk ? GOLD : BLUE }}>Aktivitets-log</div>
+      <div className="text-[11px] mb-3" style={{ color: sub }}>
+        Hvem gjorde hvad hvornår — pris-ændringer, kasse-rettelser, fortrudte/rettede handler, slettede kunder/varer, vagt-rettelser og medarbejder-/rolle-ændringer. Kun læsning; ændrer intet. Kun synlig for ejeren.
+      </div>
+
+      <div className="flex rounded-lg overflow-hidden border text-xs font-black mb-3" style={{ borderColor: dk ? "#3a3a3a" : "#d6d3d1" }}>
+        {[["dag", "I dag"], ["uge", "7 dage"], ["måned", "30 dage"], ["alt", "Alt"]].map(([v, l]) => (
+          <button key={v} onClick={() => applyPreset(v)} className="flex-1 py-2"
+            style={period === v ? { background: GOLD, color: INK } : { background: dk ? PANEL : "white", color: sub }}>{l}</button>
+        ))}
+      </div>
+
+      <div className="flex flex-wrap items-end gap-3 mb-4">
+        <div>
+          <div className="text-[10px] uppercase font-bold mb-1" style={{ color: sub }}>Fra dato</div>
+          <input type="date" value={fromDate} onChange={(e) => { setFromDate(e.target.value); setPeriod(""); }}
+            className="rounded-lg border px-2 py-1.5 text-sm" style={inputStyle} />
+        </div>
+        <div>
+          <div className="text-[10px] uppercase font-bold mb-1" style={{ color: sub }}>Til dato</div>
+          <input type="date" value={toDate} onChange={(e) => { setToDate(e.target.value); setPeriod(""); }}
+            className="rounded-lg border px-2 py-1.5 text-sm" style={inputStyle} />
+        </div>
+        <div>
+          <div className="text-[10px] uppercase font-bold mb-1" style={{ color: sub }}>Medarbejder</div>
+          <select value={actorFilter} onChange={(e) => setActorFilter(e.target.value)}
+            className="rounded-lg border px-2 py-1.5 text-sm" style={inputStyle}>
+            <option value="alle">Alle</option>
+            {actorNames.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase font-bold mb-1" style={{ color: sub }}>Handlingstype</div>
+          <select value={actionFilter} onChange={(e) => setActionFilter(e.target.value)}
+            className="rounded-lg border px-2 py-1.5 text-sm" style={inputStyle}>
+            <option value="alle">Alle</option>
+            {actionsPresent.map((a) => <option key={a} value={a}>{ACTIVITY_LABELS[a] || a}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="text-sm py-6 text-center" style={{ color: sub }}>Henter…</div>
+      ) : rows.length === 0 ? (
+        <div className="text-sm py-6 text-center" style={{ color: sub }}>Ingen hændelser i den valgte periode.</div>
+      ) : (
+        <div className="space-y-2">
+          {rows.map((e) => (
+            <div key={e.id} className="rounded-xl border p-3" style={box}>
+              <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
+                <span className="font-bold" style={{ color: dk ? GOLD : GOLD_D }}>{ACTIVITY_LABELS[e.action] || e.action}</span>
+                <span className="text-[11px] tabular-nums" style={{ color: sub }}>{fmtDateDK(e.atMs)} · {fmtTimeDK(e.atMs)}</span>
+              </div>
+              <div className="text-sm" style={{ color: dk ? "white" : INK }}>{describeActivity(e, cur)}</div>
+              <div className="text-[11px] mt-1" style={{ color: sub }}>Af: {e.actor_name || "Ukendt"}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {!loading && rows.length > 0 && (
+        <div className="text-[11px] mt-3 text-center" style={{ color: sub }}>{rows.length} hændelse{rows.length === 1 ? "" : "r"} i den valgte periode.</div>
       )}
     </div>
   );
