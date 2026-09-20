@@ -1458,8 +1458,8 @@ export default function App() {
   const sidebarContent = (
     <>
       <button onClick={goHome} className="flex items-center gap-3 px-4 pt-5 pb-4 text-left w-full shrink-0" title="Til forsiden">
-        <span className="inline-flex items-center justify-center rounded-lg font-black shrink-0"
-          style={{ background: GOLD, color: INK, width: 40, height: 40, fontSize: 20 }}>◆</span>
+        <img src="/logo.png" alt="Mirror Pawnshop" className="rounded-lg shrink-0 object-contain"
+          style={{ width: 40, height: 40 }} />
         <div className="min-w-0">
           <div className="uppercase tracking-widest font-bold text-[10px]" style={{ color: GOLD }}>Buy · Sell · Trade</div>
           <div className="font-black leading-tight text-white text-base truncate">{config.shopName}</div>
@@ -1470,10 +1470,18 @@ export default function App() {
         <div className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold" style={{ background: "rgba(234,179,8,.12)", color: GOLD }}>
           <User size={14} className="shrink-0" /> <span className="truncate">{profile.name}</span> <span className="shrink-0" style={{ opacity: .6 }}>· {profile.role}</span>
         </div>
-        <div className="flex rounded-lg overflow-hidden text-[11px] font-bold" style={{ border: "1px solid rgba(234,179,8,.35)" }}>
-          {[["auto", "Auto"], ["mobil", "Telefon"], ["pc", "PC"]].map(([v, l]) => (
-            <button key={v} onClick={() => setMode(v)} className="flex-1 py-1.5"
-              style={mode === v ? { background: GOLD, color: INK } : { color: GOLD }}>{l}</button>
+        <div className="flex rounded-lg overflow-hidden text-xs" style={{ border: "1px solid rgba(234,179,8,.3)", background: "rgba(255,255,255,.03)" }}>
+          {[["auto", "Auto"], ["mobil", "Telefon"], ["pc", "PC"]].map(([v, l], i) => (
+            <button key={v} onClick={() => setMode(v)}
+              className="flex-1 py-2 px-2 flex items-center justify-center"
+              style={{
+                ...(mode === v
+                  ? { background: "rgba(234,179,8,.16)", color: GOLD, fontWeight: 700 }
+                  : { color: "rgba(255,255,255,.5)", fontWeight: 500 }),
+                borderRight: i < 2 ? "1px solid rgba(255,255,255,.08)" : "none",
+              }}>
+              {l}
+            </button>
           ))}
         </div>
       </div>
