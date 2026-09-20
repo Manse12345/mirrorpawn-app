@@ -181,7 +181,7 @@ export default function PublicPriceList() {
 
             {updatedAt && (
               <div className="text-center text-[11px] mt-8" style={{ color: SUB }}>
-                Priser opdateret: {updatedAt.toLocaleTimeString("da-DK", { hour: "2-digit", minute: "2-digit" })}
+                Priser opdateret: {updatedAt.toLocaleTimeString("da-DK", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Copenhagen" })}
               </div>
             )}
           </>

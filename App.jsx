@@ -73,6 +73,17 @@ const DEFAULT_CONFIG = {
 };
 
 const fmt = (n) => (Math.round(n) || 0).toLocaleString("da-DK");
+// Alle klokkeslæt/datoer i appen skal vises i DANSK tid (Europe/Copenhagen), med
+// korrekt sommer-/vintertid — IKKE i den tidszone browseren/enheden selv står i
+// (som fx kan være UTC, hvis nogen tester fra en server/VPS). Tidsstemplerne i
+// databasen er og forbliver UTC — dette rører KUN visningen, aldrig lagringen
+// eller nogen beregning (varighed osv. regnes stadig på de rå ms-epoch-tal).
+// "en-GB" bruges bevidst for selve KLOKKESLÆT-formatet (garanterer "14:05" med
+// kolon og 24-timers-ur) — det er kun "timeZone", der styrer selve tidszonen,
+// uanset hvilket sprog-format der bruges til at skrive tallene ud.
+const DK_TZ = "Europe/Copenhagen";
+const fmtTimeDK = (ms) => new Date(ms).toLocaleTimeString("en-GB", { timeZone: DK_TZ, hour: "2-digit", minute: "2-digit", hour12: false });
+const fmtDateDK = (ms) => new Date(ms).toLocaleDateString("da-DK", { timeZone: DK_TZ });
 const PAGE_MAX = 1100; // max-bredde for indholdssider på brede skærme (Kunder/Ansatte/Rediger)
 const BIG_TRADE_CONFIRM_THRESHOLD = 500000; // over dette beløb (kr.) skal kassøren bekræfte handlen, før den gemmes
 
@@ -1953,11 +1964,10 @@ function Customers({ sales, config, cur, wide, openCust, setOpenCust, canManage,
         <div className="text-xs font-black uppercase tracking-wider mb-2" style={{ color: dk ? GOLD : BLUE }}>Alle handler</div>
         <div className="space-y-2">
           {c.trades.sort((a, b) => b.at - a.at).map((t) => {
-            const d = new Date(t.at);
             return (
               <div key={t.id} className="rounded-xl border p-3" style={box}>
                 <div className="flex justify-between">
-                  <span className="text-[11px]" style={{ color: sub }}>{d.toLocaleDateString("da-DK")} · {d.toTimeString().slice(0, 5)}</span>
+                  <span className="text-[11px]" style={{ color: sub }}>{fmtDateDK(t.at)} · {fmtTimeDK(t.at)}</span>
                   <span className="font-black tabular-nums" style={{ color: dk ? GOLD : INK }}>{fmt(t.total)} {cur}</span>
                 </div>
                 <div className="text-xs mt-1" style={{ color: sub }}>{t.lines.map((l) => `${l.qty}× ${l.name}`).join(" · ")}</div>
@@ -2985,7 +2995,6 @@ function ScanTrayModal({ materials, onApply, onClose, calibrationMode }) {
 // visning, og "Færdig" lukker den blot (onClose) — som hidtil.
 function ReceiptModal({ trade, config, pending, saving, onConfirm, onCancel, onClose }) {
   const cur = config.currency;
-  const d = new Date(trade.at);
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 px-4" onClick={pending ? undefined : onClose}>
       <div className="bg-white rounded-2xl w-full max-w-sm overflow-hidden" onClick={(e) => e.stopPropagation()}>
@@ -2999,7 +3008,7 @@ function ReceiptModal({ trade, config, pending, saving, onConfirm, onCancel, onC
           )}
           <div className="text-[10px] uppercase tracking-widest font-bold" style={{ color: GOLD }}>Buy · Sell · Trade</div>
           <div className="text-xl font-black text-white">{config.shopName}</div>
-          <div className="text-[11px] text-stone-400 mt-0.5">Kvittering · {d.toLocaleDateString("da-DK")} {d.toTimeString().slice(0, 5)}</div>
+          <div className="text-[11px] text-stone-400 mt-0.5">Kvittering · {fmtDateDK(trade.at)} {fmtTimeDK(trade.at)}</div>
         </div>
         <div className="px-5 py-4 text-stone-900">
           {trade.lines.map((l, i) => (
@@ -3234,7 +3243,6 @@ function SalesLog({ sales, cur, wide, onClear, onReverse, onEditCustomer, onEdit
       {inPeriod.length === 0 && <div className="text-sm py-6 text-center" style={{ color: sub }}>Ingen handler i denne periode.</div>}
       <div className="space-y-2">
         {inPeriod.map((t) => {
-          const d = new Date(t.at);
           const isSell = t.type === "sell";
           // En handel kan indeholde BÅDE almindelige varer (udgift) OG skranke-varer
           // (gevinst = avancen). Kun for sådanne blandede/skranke-handler viser vi
@@ -3251,7 +3259,7 @@ function SalesLog({ sales, cur, wide, onClear, onReverse, onEditCustomer, onEdit
                   <span className="px-1.5 py-0.5 rounded font-bold" style={isSell ? { background: "rgba(74,222,128,.15)", color: dk ? "#4ade80" : GREEN } : { background: "rgba(245,179,1,.15)", color: dk ? GOLD : GOLD_D }}>
                     {isSell ? "🏷️ Salg" : "💰 Køb"}
                   </span>
-                  {d.toLocaleDateString("da-DK")} · {d.toTimeString().slice(0, 5)}
+                  {fmtDateDK(t.at)} · {fmtTimeDK(t.at)}
                   {t.sellerName && ` · af ${t.sellerName}`}
                 </div>
                 <div className="flex items-center gap-3">
@@ -3303,7 +3311,7 @@ function ShiftStatusCard({ profile, activeShifts, wide, err, onClockIn, onClockO
   const sub = dk ? "#9ca3af" : "#78716c";
   const [busy, setBusy] = useState(false);
   const myShift = activeShifts.find((s) => s.userId === profile.id);
-  const fmtHM = (ms) => new Date(ms).toTimeString().slice(0, 5);
+  const fmtHM = fmtTimeDK; // dansk tid (Europe/Copenhagen), ikke browserens/serverens egen tidszone
 
   const doClockIn = async () => { setBusy(true); try { await onClockIn(); } finally { setBusy(false); } };
   const doClockOut = async () => { setBusy(true); try { await onClockOut(); } finally { setBusy(false); } };
@@ -3341,7 +3349,7 @@ function ShiftView({ profile, activeShifts, shiftLog, shiftLogLoading, staffList
   const [period, setPeriod] = useState("dag"); // dag | uge | måned | alt — samme som Dagbog
   const [editingId, setEditingId] = useState(null);
 
-  const fmtHM = (ms) => new Date(ms).toTimeString().slice(0, 5);
+  const fmtHM = fmtTimeDK; // dansk tid (Europe/Copenhagen), ikke browserens/serverens egen tidszone
 
   const now = Date.now();
   const cutoff = period === "dag" ? new Date().setHours(0, 0, 0, 0)
@@ -3461,9 +3469,9 @@ function ShiftLogRow({ shift, dk, box, sub, isOwner, editing, onStartEdit, onCan
         <div>
           <div className="font-bold" style={{ color: dk ? "white" : INK }}>{shift.name}</div>
           <div className="text-xs" style={{ color: sub }}>
-            {new Date(shift.clockIn).toLocaleDateString("da-DK")} · {new Date(shift.clockIn).toTimeString().slice(0, 5)}
+            {fmtDateDK(shift.clockIn)} · {fmtTimeDK(shift.clockIn)}
             {" → "}
-            {isOpen ? <span style={{ color: dk ? "#facc15" : "#b45309", fontWeight: 700 }}>pågår</span> : new Date(shift.clockOut).toTimeString().slice(0, 5)}
+            {isOpen ? <span style={{ color: dk ? "#facc15" : "#b45309", fontWeight: 700 }}>pågår</span> : fmtTimeDK(shift.clockOut)}
             {" · "}{durTxt}
           </div>
         </div>
@@ -3515,8 +3523,8 @@ function ShiftExport({ staffList, shiftLog, shiftLogLoading, dk, box, sub }) {
   const [fromDate, setFromDate] = useState(monthAgoStr());
   const [toDate, setToDate] = useState(todayStr());
 
-  const fmtHM = (ms) => new Date(ms).toTimeString().slice(0, 5);
-  const fmtDate = (ms) => new Date(ms).toLocaleDateString("da-DK");
+  const fmtHM = fmtTimeDK; // dansk tid (Europe/Copenhagen), ikke browserens/serverens egen tidszone
+  const fmtDate = fmtDateDK; // dansk tid (Europe/Copenhagen), ikke browserens/serverens egen tidszone
   // "t:mm" (timer:minutter) — samme format for BÅDE hver enkelt vagt og totalen
   // nederst, som ønsket ("total timer:minutter").
   const fmtDuration = (ms) => {

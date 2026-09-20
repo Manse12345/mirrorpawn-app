@@ -17,7 +17,9 @@ import { loadPublicLeaderboard } from "./supabase-store.js";
 // ============================================================
 
 const INK = "#141414", GOLD = "#F5B301", PANEL = "#1c1c1c", SUB = "#9ca3af";
-const fmtDate = (iso) => (iso ? new Date(iso).toLocaleString("da-DK", { dateStyle: "medium", timeStyle: "short" }) : "");
+// timeZone eksplicit sat til dansk tid — ellers viser den besøgendes egen enheds/
+// browsers tidszone (kan være forkert, fx UTC), ikke Europe/Copenhagen.
+const fmtDate = (iso) => (iso ? new Date(iso).toLocaleString("da-DK", { dateStyle: "medium", timeStyle: "short", timeZone: "Europe/Copenhagen" }) : "");
 const fmtAmt = (n) => (Math.round(n) || 0).toLocaleString("da-DK");
 
 // Nutid, opdateret hvert sekund — driver den live nedtælling.
