@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, ChevronDown, Lock, Package, ArrowLeftRight, Home, Camera, Hammer, Trophy, TrendingUp, Star, Pencil, Download, Wallet, Activity, Megaphone } from "lucide-react";
+import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, ChevronDown, Lock, Package, ArrowLeftRight, Home, Camera, Hammer, Trophy, TrendingUp, TrendingDown, Star, Pencil, Download, Wallet, Activity, Megaphone } from "lucide-react";
 import {
   loadConfig, saveConfig as sbSaveConfig, loadSales as sbLoadSales, insertSale, logEvent,
   signIn, signOut, getSession, onAuthChange, loadMyProfile, loadAllProfiles,
@@ -26,7 +26,9 @@ const KEY = "pawn_config_v1";
 const LOG_KEY = "pawn_sales_v1";
 const BLUE = "#1F3864", GREEN = "#2E7D32", ORANGE = "#E67E22", RED = "#C0392B";
 const BLUE_T = "#EEF2F9", GREEN_T = "#EDF6EE";
-const INK = "#141414", GOLD = "#F5B301", GOLD_D = "#C99400", PANEL = "#1c1c1c";
+// Visuel palette (kun udseende — se redesign-noten). INK/PANEL = dyb, dæmpet grafit med
+// blød dybde mellem baggrund og kort; GOLD/GOLD_D = afdæmpet rav/guld-accent.
+const INK = "#0d0f12", GOLD = "#eab308", GOLD_D = "#a16207", PANEL = "#15171b";
 
 const DEFAULT_CONFIG = {
   shopName: "Udbetalingsberegner",
@@ -639,9 +641,9 @@ async function scanTrayImage(imgSrc, worker, materials, onProgress) {
    kun de 5 seneste (hentet sådan i loadBulletinPosts). */
 function BulletinBoard({ posts, canManage, err, onCreate, onDelete, wide }) {
   const dk = wide;
-  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const box = dk ? { background: PANEL, borderColor: "rgba(255,255,255,.08)" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
-  const inputStyle = { borderColor: dk ? "#3a3a3a" : "#d6d3d1", background: dk ? "#141414" : "white", color: dk ? "white" : INK };
+  const inputStyle = { borderColor: dk ? "rgba(255,255,255,.14)" : "#d6d3d1", background: dk ? "#0d0f12" : "white", color: dk ? "white" : INK };
   const [composing, setComposing] = useState(false);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
@@ -657,14 +659,14 @@ function BulletinBoard({ posts, canManage, err, onCreate, onDelete, wide }) {
   };
 
   return (
-    <div className="rounded-xl border p-3" style={box}>
+    <div className="rounded-xl border p-4" style={box}>
       <div className="flex items-center justify-between mb-2">
         <div className="text-xs font-black uppercase tracking-widest flex items-center gap-1.5" style={{ color: dk ? GOLD : BLUE }}>
           <Megaphone size={13} /> Opslagstavle
         </div>
         {canManage && !composing && (
           <button onClick={() => setComposing(true)} className="text-[11px] font-bold px-2 py-1 rounded-md flex items-center gap-1"
-            style={{ color: dk ? GOLD : BLUE, background: dk ? "rgba(245,179,1,.12)" : BLUE_T }}>
+            style={{ color: dk ? GOLD : BLUE, background: dk ? "rgba(234,179,8,.12)" : BLUE_T }}>
             <Plus size={12} /> Nyt opslag
           </button>
         )}
@@ -684,7 +686,7 @@ function BulletinBoard({ posts, canManage, err, onCreate, onDelete, wide }) {
               {busy ? "Opslår…" : "Opslå"}
             </button>
             <button onClick={() => { setComposing(false); setText(""); setFormErr(""); }}
-              className="px-3 py-1.5 rounded-full font-black text-xs" style={{ background: dk ? "#2a2a2a" : "#f0efed", color: sub }}>
+              className="px-3 py-1.5 rounded-full font-black text-xs" style={{ background: dk ? "rgba(255,255,255,.06)" : "#f0efed", color: sub }}>
               Annuller
             </button>
           </div>
@@ -696,12 +698,12 @@ function BulletinBoard({ posts, canManage, err, onCreate, onDelete, wide }) {
       ) : (
         <div className="space-y-1.5">
           {posts.map((p) => (
-            <div key={p.id} className="rounded-lg px-2.5 py-2" style={{ background: dk ? "#141414" : "#fafaf9" }}>
+            <div key={p.id} className="rounded-lg px-2.5 py-2" style={{ background: dk ? "#0d0f12" : "#fafaf9" }}>
               <div className="flex items-start justify-between gap-2">
                 <div className="text-sm whitespace-pre-wrap" style={{ color: dk ? "white" : INK }}>{p.text}</div>
                 {canManage && (
                   <button onClick={() => { if (window.confirm("Slet dette opslag?")) onDelete(p.id); }}
-                    className="shrink-0 p-1 rounded-md" style={{ color: dk ? "#f87171" : RED }} title="Slet opslag">
+                    className="shrink-0 p-1 rounded-md" style={{ color: dk ? "#f43f5e" : RED }} title="Slet opslag">
                     <Trash2 size={13} />
                   </button>
                 )}
@@ -719,7 +721,7 @@ function BulletinBoard({ posts, canManage, err, onCreate, onDelete, wide }) {
 
 function DailyOverview({ sales, materials, cash, cur, wide }) {
   const dk = wide;
-  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const box = dk ? { background: PANEL, borderColor: "rgba(255,255,255,.08)" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
 
   const todayCutoff = new Date().setHours(0, 0, 0, 0);
@@ -746,14 +748,14 @@ function DailyOverview({ sales, materials, cash, cur, wide }) {
   const topName = topEntry ? ((materials.find((m) => m.id === topEntry[0]) || {}).name || topEntry[0]) : null;
 
   return (
-    <div className="rounded-xl border p-3" style={box}>
+    <div className="rounded-xl border p-4" style={box}>
       <div className="text-xs font-black uppercase tracking-widest mb-2 flex items-center gap-1.5" style={{ color: dk ? GOLD : BLUE }}>
         <TrendingUp size={13} /> Dagens overblik
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
         <div>
           <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>Overskud i dag</div>
-          <div className="text-base font-black tabular-nums" style={{ color: overskud >= 0 ? (dk ? "#4ade80" : GREEN) : (dk ? "#f87171" : RED) }}>
+          <div className="text-base font-black tabular-nums" style={{ color: overskud >= 0 ? (dk ? "#34d399" : GREEN) : (dk ? "#f43f5e" : RED) }}>
             {fmt(overskud)} {cur}
           </div>
         </div>
@@ -1432,6 +1434,15 @@ export default function App() {
     setReceipt(null); setPendingTrade(null); setPendingCraftChoices({});
   };
 
+  // Fane-styling til hoved-navigationen (rent visuelt — se redesign-noten): slank,
+  // flad tekst-tab i stedet for tunge udfyldte piller. Aktiv fane = guld tekst + en
+  // lille indikator-streg (border-bottom) og et svagt glow; inaktive faner er neutralt
+  // grå, ingen baggrund. Rører ikke onClick/view-logik noget sted — kun style/className.
+  const navTabClass = "flex items-center gap-1.5 px-2.5 py-1.5 text-sm font-bold border-b-2 whitespace-nowrap";
+  const navTabStyle = (active) => active
+    ? { color: GOLD, borderColor: GOLD, textShadow: "0 0 14px rgba(234,179,8,.35)" }
+    : { color: "rgba(255,255,255,.55)", borderColor: "transparent" };
+
   return (
     <div className={"min-h-screen font-sans w-full" + (wide ? " text-white" : " text-stone-900 pb-40 mx-auto")}
       style={{ maxWidth: wide ? "100%" : 480, background: wide ? INK : "#fafaf9" }}>
@@ -1457,109 +1468,96 @@ export default function App() {
       )}
 
       {/* Header */}
-      <div className={"flex items-center justify-between " + (wide ? "px-8 py-6" : "px-4 pt-4 pb-3 text-white")}
+      <div className={"flex items-center justify-between " + (wide ? "px-8 py-4" : "px-4 pt-3 pb-2.5 text-white")}
         style={wide
-          ? { background: `linear-gradient(135deg, ${INK} 0%, #232323 60%, ${INK} 100%)`, borderBottom: `3px solid ${GOLD}` }
-          : { background: INK, borderBottom: `3px solid ${GOLD}` }}>
+          ? { background: `linear-gradient(135deg, ${INK} 0%, #1a1d22 60%, ${INK} 100%)`, borderBottom: `2px solid rgba(234,179,8,.5)` }
+          : { background: INK, borderBottom: `2px solid rgba(234,179,8,.5)` }}>
         <button onClick={goHome} className="flex items-center gap-3 text-left" title="Til forsiden">
           <span className="inline-flex items-center justify-center rounded-lg font-black shrink-0"
-            style={{ background: GOLD, color: INK, width: wide ? 52 : 40, height: wide ? 52 : 40, fontSize: wide ? 26 : 20 }}>◆</span>
+            style={{ background: GOLD, color: INK, width: wide ? 48 : 38, height: wide ? 48 : 38, fontSize: wide ? 24 : 19 }}>◆</span>
           <div>
             <div className="uppercase tracking-widest font-bold" style={{ color: GOLD, fontSize: wide ? 11 : 10 }}>Buy · Sell · Trade</div>
-            <div className={"font-black leading-none text-white " + (wide ? "text-3xl" : "text-lg")}>{config.shopName}</div>
-            {wide && <div className="text-[10px] text-stone-500 mt-1 flex items-center gap-1"><Clock size={10} /> Priser synkroniseres automatisk</div>}
+            <div className={"font-black leading-none text-white " + (wide ? "text-2xl" : "text-lg")}>{config.shopName}</div>
+            {wide && <div className="text-[10px] mt-1 flex items-center gap-1" style={{ color: "rgba(255,255,255,.4)" }}><Clock size={10} /> Priser synkroniseres automatisk</div>}
           </div>
         </button>
-        <div className="flex items-center gap-2">
-          <div className="hidden sm:flex items-center gap-1.5 pl-3 pr-3 py-2 rounded-full text-xs font-bold"
-            style={{ background: "rgba(245,179,1,.15)", color: GOLD }}>
+        <div className="flex items-center gap-1">
+          <div className="hidden sm:flex items-center gap-1.5 pl-3 pr-3 py-1.5 rounded-full text-xs font-bold mr-1"
+            style={{ background: "rgba(234,179,8,.12)", color: GOLD }}>
             <User size={14} /> {profile.name} <span style={{ opacity: .6 }}>· {profile.role}</span>
           </div>
-          <div className="hidden sm:flex rounded-full overflow-hidden text-[11px] font-bold" style={{ border: "1px solid rgba(245,179,1,.4)" }}>
+          <div className="hidden sm:flex rounded-full overflow-hidden text-[11px] font-bold mr-1" style={{ border: "1px solid rgba(234,179,8,.35)" }}>
             {[["auto", "Auto"], ["mobil", "Telefon"], ["pc", "PC"]].map(([v, l]) => (
               <button key={v} onClick={() => setMode(v)} className="px-2.5 py-1.5"
                 style={mode === v ? { background: GOLD, color: INK } : { color: GOLD }}>{l}</button>
             ))}
           </div>
-          <button onClick={goHome}
-            className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
-            style={view === "beregner" && !showSettings ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+          <button onClick={goHome} className={navTabClass} style={navTabStyle(view === "beregner" && !showSettings)}>
             <Home size={16} /> <span className="hidden sm:inline">Hjem</span>
           </button>
           <button onClick={() => { setView(view === "kunder" ? "beregner" : "kunder"); setShowSettings(false); setOpenCust(null); }}
-            className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
-            style={view === "kunder" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+            className={navTabClass} style={navTabStyle(view === "kunder")}>
             <User size={16} /> Kunder
           </button>
           <button onClick={() => { setView(view === "lager" ? "beregner" : "lager"); setShowSettings(false); }}
-            className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
-            style={view === "lager" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+            className={navTabClass} style={navTabStyle(view === "lager")}>
             <Package size={16} /> Lager
           </button>
           <button onClick={() => { setView(view === "crafting" ? "beregner" : "crafting"); setShowSettings(false); }}
-            className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
-            style={view === "crafting" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+            className={navTabClass} style={navTabStyle(view === "crafting")}>
             <Hammer size={16} /> Crafting
           </button>
           <button onClick={() => { setView(view === "vagt" ? "beregner" : "vagt"); setShowSettings(false); }}
-            className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
-            style={view === "vagt" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+            className={navTabClass} style={navTabStyle(view === "vagt")}>
             <Clock size={16} /> Vagt
           </button>
           {canManageStore && (
             <button onClick={() => { setView(view === "ansatte" ? "beregner" : "ansatte"); setShowSettings(false); }}
-              className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
-              style={view === "ansatte" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+              className={navTabClass} style={navTabStyle(view === "ansatte")}>
               <Users size={16} /> Ansatte
             </button>
           )}
           {canManageStore && (
             <button onClick={() => { setView(view === "medarbejdere" ? "beregner" : "medarbejdere"); setShowSettings(false); }}
-              className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
-              style={view === "medarbejdere" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+              className={navTabClass} style={navTabStyle(view === "medarbejdere")}>
               <Wallet size={16} /> Medarbejdere
             </button>
           )}
           {canViewLeaderboard && (
             <button onClick={() => { setView(view === "leaderboard" ? "beregner" : "leaderboard"); setShowSettings(false); }}
-              className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
-              style={view === "leaderboard" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+              className={navTabClass} style={navTabStyle(view === "leaderboard")}>
               <Trophy size={16} /> Leaderboard
             </button>
           )}
           {isOwner && (
             <button onClick={() => { setView(view === "aktivitet" ? "beregner" : "aktivitet"); setShowSettings(false); }}
-              className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
-              style={view === "aktivitet" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+              className={navTabClass} style={navTabStyle(view === "aktivitet")}>
               <Activity size={16} /> Aktivitet
             </button>
           )}
           <button onClick={() => { setView(view === "log" ? "beregner" : "log"); setShowSettings(false); }}
-            className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
-            style={view === "log" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+            className={navTabClass} style={navTabStyle(view === "log")}>
             <BarChart3 size={16} /> Dagbog
           </button>
           <button onClick={() => { setView(view === "topvarer" ? "beregner" : "topvarer"); setShowSettings(false); }}
-            className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
-            style={view === "topvarer" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+            className={navTabClass} style={navTabStyle(view === "topvarer")}>
             <TrendingUp size={16} /> Top-varer
           </button>
           <button onClick={() => { setView(view === "stamkunder" ? "beregner" : "stamkunder"); setShowSettings(false); }}
-            className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
-            style={view === "stamkunder" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
+            className={navTabClass} style={navTabStyle(view === "stamkunder")}>
             <Star size={16} /> Stamkunder
           </button>
           {canManageStore && (
             <button onClick={toggleSettings}
-              className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
+              className="flex items-center gap-1.5 pl-3 pr-3.5 py-1.5 rounded-full font-black text-sm ml-1"
               style={{ background: GOLD, color: INK }}
               aria-label="Rediger materialer og priser">
               <Settings size={16} /> {showSettings ? "Luk" : "Rediger"}
             </button>
           )}
           <button onClick={doLogout} title="Log ud"
-            className="flex items-center justify-center w-9 h-9 rounded-full font-black text-sm"
-            style={{ background: "rgba(245,179,1,.15)", color: GOLD }}>
+            className="flex items-center justify-center w-9 h-9 rounded-full font-black text-sm ml-1"
+            style={{ background: "rgba(234,179,8,.12)", color: GOLD }}>
             <LogOut size={16} />
           </button>
         </div>
@@ -1627,7 +1625,7 @@ export default function App() {
               husker at stemple ind, FØR man begynder at handle. */}
           <ShiftStatusCard profile={profile} activeShifts={activeShifts} wide={wide} err={shiftErr}
             onClockIn={handleClockIn} onClockOut={handleClockOut} />
-          <div className="flex rounded-lg overflow-hidden border text-sm font-black" style={{ borderColor: wide ? "#3a3a3a" : "#d6d3d1" }}>
+          <div className="flex rounded-lg overflow-hidden border text-sm font-black" style={{ borderColor: wide ? "rgba(255,255,255,.14)" : "#d6d3d1" }}>
             <button onClick={() => switchTradeMode("buy")} className="flex-1 flex items-center justify-center gap-1.5 py-2.5"
               style={tradeMode === "buy" ? { background: GOLD, color: INK } : { background: wide ? PANEL : "white", color: wide ? "#9ca3af" : "#78716c" }}>
               <ArrowLeftRight size={15} /> Køb fra kunde
@@ -1640,14 +1638,14 @@ export default function App() {
           {tradeMode === "buy" && (
             <button onClick={() => { setScanCalibrate(false); setShowScan(true); }}
               className="w-full flex items-center justify-center gap-1.5 py-2.5 rounded-lg font-bold text-sm border-2 border-dashed"
-              style={wide ? { borderColor: GOLD, color: GOLD, background: "rgba(245,179,1,.08)" } : { borderColor: GOLD_D, color: GOLD_D, background: "#fdf3e7" }}>
+              style={wide ? { borderColor: GOLD, color: GOLD, background: "rgba(234,179,8,.08)" } : { borderColor: GOLD_D, color: GOLD_D, background: "#fdf3e7" }}>
               <Camera size={16} /> Scan bakke (læs varer fra screenshot)
             </button>
           )}
           {tradeMode === "buy" && canManageStore && (
             <button onClick={() => { setScanCalibrate(true); setShowScan(true); }}
               className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg font-semibold text-xs border border-dashed"
-              style={wide ? { borderColor: "#3a3a3a", color: "#9ca3af" } : { borderColor: "#d6d3d1", color: "#78716c" }}
+              style={wide ? { borderColor: "rgba(255,255,255,.14)", color: "#9ca3af" } : { borderColor: "#d6d3d1", color: "#78716c" }}
               title="Ret antal-tal 100% korrekt på en scannet bakke og gem dem som skabeloner, så Scan bakke læser tal mere præcist fremover">
               <Camera size={13} /> Kalibrér cifre (forbedr tal-læsning)
             </button>
@@ -1657,12 +1655,12 @@ export default function App() {
             <input placeholder="Søg materiale…" value={q} onChange={(e) => setQ(e.target.value)}
               autoFocus={wide}
               className="w-full rounded-lg border pl-8 pr-3 py-2 text-sm"
-              style={wide ? { borderColor: "#3a3a3a", background: PANEL, color: "white" } : { borderColor: "#d6d3d1", background: "white" }} />
+              style={wide ? { borderColor: "rgba(255,255,255,.14)", background: PANEL, color: "white" } : { borderColor: "#d6d3d1", background: "white" }} />
           </div>
           {canManageStore && (
             <button onClick={toggleSettings}
               className="w-full flex items-center justify-center gap-1.5 py-2 rounded-lg border border-dashed text-sm font-semibold"
-              style={wide ? { borderColor: "#3a3a3a", color: GOLD } : { borderColor: "#d6d3d1", color: "#78716c" }}>
+              style={wide ? { borderColor: "rgba(255,255,255,.14)", color: GOLD } : { borderColor: "#d6d3d1", color: "#78716c" }}>
               <Settings size={15} /> Rediger, tilføj eller slet materialer
             </button>
           )}
@@ -1673,7 +1671,7 @@ export default function App() {
                   className="px-3 py-1.5 rounded-full text-[11px] font-bold border"
                   style={activeCat === c
                     ? { background: GOLD, color: INK, borderColor: GOLD }
-                    : (wide ? { borderColor: "#3a3a3a", color: "#9ca3af", background: "transparent" } : { borderColor: "#d6d3d1", color: "#57534e", background: "white" })}>
+                    : (wide ? { borderColor: "rgba(255,255,255,.14)", color: "#9ca3af", background: "transparent" } : { borderColor: "#d6d3d1", color: "#57534e", background: "white" })}>
                   {c}
                 </button>
               ))}
@@ -1690,10 +1688,10 @@ export default function App() {
             const isEmpty = stock <= 0;
             const isLow = stock > 0 && stock <= 5;
             const stockBg = isEmpty ? (dark ? "rgba(248,113,113,.07)" : "#fdf4f3") : isLow ? (dark ? "rgba(156,163,175,.08)" : "#f6f5f4") : (dark ? PANEL : "white");
-            const stockBorder = isEmpty ? (dark ? "#5c2b2b" : "#f3c9c6") : isLow ? (dark ? "#4a4a48" : "#e5e3e0") : (dark ? "#333" : "#e7e5e4");
+            const stockBorder = isEmpty ? (dark ? "#5c2b2b" : "#f3c9c6") : isLow ? (dark ? "#4a4a48" : "#e5e3e0") : (dark ? "rgba(255,255,255,.08)" : "#e7e5e4");
             const quickBtn = dark ? { background: "#262626", color: "#d4d4d4", border: "1px solid #444" } : { background: "#f5f5f4", color: "#57534e", border: "1px solid #e7e5e4" };
             return (
-              <div key={m.id} className="rounded-xl border p-3"
+              <div key={m.id} className="rounded-xl border p-4"
                 style={{ background: stockBg, borderColor: active ? GOLD : stockBorder, borderLeft: active ? `3px solid ${GOLD}` : `1px solid ${stockBorder}`, opacity: isEmpty ? 0.5 : 1 }}>
                 <div className="flex items-center justify-between">
                   <div>
@@ -1703,7 +1701,7 @@ export default function App() {
                       {" · "}
                       <span style={tradeMode === "sell" ? { color: GOLD, fontWeight: 700 } : {}}>Salg {fmt(m.sell ?? m.price)}</span>
                       {" "}{cur} pr. {m.unit || "stk."}
-                      {" · "}Lager: <span style={{ color: (oversell || isEmpty) ? "#f87171" : isLow ? (dark ? "#facc15" : "#b45309") : (dark ? "#9ca3af" : "#a8a29e"), fontWeight: (oversell || isEmpty || isLow) ? 700 : 400 }}>{stock}</span>
+                      {" · "}Lager: <span style={{ color: (oversell || isEmpty) ? "#f43f5e" : isLow ? (dark ? "#facc15" : "#b45309") : (dark ? "#9ca3af" : "#a8a29e"), fontWeight: (oversell || isEmpty || isLow) ? 700 : 400 }}>{stock}</span>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -1730,7 +1728,7 @@ export default function App() {
                   )}
                 </div>
                 {active && (
-                  <div className="mt-2 pt-2 flex items-center justify-between gap-2" style={{ borderTop: `1px solid ${dark ? "#333" : "#f0efed"}` }}>
+                  <div className="mt-2 pt-2 flex items-center justify-between gap-2" style={{ borderTop: `1px solid ${dark ? "rgba(255,255,255,.08)" : "#f0efed"}` }}>
                     <label className="text-[11px] flex items-center gap-1.5" style={{ color: dark ? "#9ca3af" : "#78716c" }}>
                       Pris/stk.
                       <input type="number" inputMode="numeric" value={c.price}
@@ -1744,7 +1742,7 @@ export default function App() {
                   </div>
                 )}
                 {oversell && (
-                  <div className="text-[11px] font-bold mt-1.5" style={{ color: "#f87171" }}>
+                  <div className="text-[11px] font-bold mt-1.5" style={{ color: "#f43f5e" }}>
                     ⚠ Kun {stock} på lager — salget kan stadig gemmes, men lageret går i minus.
                   </div>
                 )}
@@ -1768,7 +1766,7 @@ export default function App() {
                           {l.isCounter && (
                             <button onClick={() => setCounterItems((prev) => prev.filter((it) => it.id !== l.m.id))}
                               title="Fjern skranke-vare" aria-label="Fjern skranke-vare"
-                              className="w-4 h-4 rounded-full flex items-center justify-center shrink-0" style={{ color: "#f87171" }}>
+                              className="w-4 h-4 rounded-full flex items-center justify-center shrink-0" style={{ color: "#f43f5e" }}>
                               <X size={12} />
                             </button>
                           )}
@@ -1780,7 +1778,7 @@ export default function App() {
                 {lines.length > 0 && (
                   <div className="px-4 pt-2 flex justify-between text-xs" style={{ color: "#9ca3af" }}>
                     <span>{secondaryLabel}: <span className="font-bold text-white">{fmt(sellTotal)} {cur}</span></span>
-                    <span>{profitLabel}: <span className="font-black" style={{ color: profit >= 0 ? "#4ade80" : "#f87171" }}>{fmt(profit)} {cur}</span></span>
+                    <span>{profitLabel}: <span className="font-black" style={{ color: profit >= 0 ? "#34d399" : "#f43f5e" }}>{fmt(profit)} {cur}</span></span>
                   </div>
                 )}
                 <div className="px-4 py-4">
@@ -2014,7 +2012,7 @@ function CustomerPhoneEditor({ dk, box, sub, phone, onSave }) {
       <div className="flex items-center gap-2">
         <input value={value} onChange={(e) => setValue(e.target.value)} placeholder="Ikke noteret" inputMode="tel"
           className="flex-1 min-w-0 rounded-lg border px-3 py-2 text-sm"
-          style={dk ? { borderColor: "#3a3a3a", background: PANEL, color: "white" } : { borderColor: "#d6d3d1" }} />
+          style={dk ? { borderColor: "rgba(255,255,255,.14)", background: PANEL, color: "white" } : { borderColor: "#d6d3d1" }} />
         {dirty && (
           <button disabled={busy} onClick={save} className="px-3 py-2 rounded-lg font-bold text-xs shrink-0" style={{ background: GOLD, color: INK }}>
             {savedFlash ? "Gemt!" : (busy ? "Gemmer…" : "Gem")}
@@ -2029,7 +2027,7 @@ function CustomerPhoneEditor({ dk, box, sub, phone, onSave }) {
 function Customers({ sales, config, cur, wide, openCust, setOpenCust, canManage, onDeleteCustomer, phones, onSavePhone }) {
   const [q, setQ] = useState("");
   const dk = wide;
-  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const box = dk ? { background: PANEL, borderColor: "rgba(255,255,255,.08)" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
   const custs = buildCustomers(sales);
   const wrap = "pb-10 " + (dk ? "px-8 pt-6 mx-auto " : "px-3 pt-3 ") + (dk ? "text-white" : "");
@@ -2058,7 +2056,7 @@ function Customers({ sales, config, cur, wide, openCust, setOpenCust, canManage,
                 }
               }}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-bold text-xs"
-              style={{ background: dk ? "rgba(192,57,43,.15)" : "#fdf0ef", color: RED }}>
+              style={{ background: dk ? "rgba(244,63,94,.15)" : "#fdf0ef", color: RED }}>
               <Trash2 size={14} /> Slet kunde
             </button>
           )}
@@ -2077,7 +2075,7 @@ function Customers({ sales, config, cur, wide, openCust, setOpenCust, canManage,
             </div>
           </div>
           <div className="mt-3">
-            <div className="h-2 rounded-full overflow-hidden" style={{ background: dk ? "#333" : "#e7e5e4" }}>
+            <div className="h-2 rounded-full overflow-hidden" style={{ background: dk ? "rgba(255,255,255,.08)" : "#e7e5e4" }}>
               <div className="h-full" style={{ width: progress + "%", background: GOLD }} />
             </div>
             <div className="text-[11px] mt-1" style={{ color: sub }}>
@@ -2089,14 +2087,14 @@ function Customers({ sales, config, cur, wide, openCust, setOpenCust, canManage,
           phone={phones?.[c.id] || ""} onSave={(phone) => onSavePhone(c.id, phone)} />
         <div className="grid grid-cols-3 gap-2 mb-3">
           {[["Handler", c.trades.length], ["Omsætning", fmt(c.total) + " " + cur], ["Avance", fmt(c.profit) + " " + cur]].map(([l, v]) => (
-            <div key={l} className="rounded-xl border p-3" style={box}>
+            <div key={l} className="rounded-xl border p-4" style={box}>
               <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>{l}</div>
               <div className="text-base font-black tabular-nums" style={{ color: dk ? "white" : INK }}>{v}</div>
             </div>
           ))}
         </div>
         {topItems.length > 0 && (
-          <div className="rounded-xl border p-3 mb-3" style={box}>
+          <div className="rounded-xl border p-4 mb-3" style={box}>
             <div className="text-xs font-black uppercase tracking-wider mb-2" style={{ color: dk ? GOLD : BLUE }}>Mest solgt</div>
             {topItems.map(([name, qty]) => (
               <div key={name} className="flex justify-between text-sm py-0.5" style={{ color: sub }}>
@@ -2109,7 +2107,7 @@ function Customers({ sales, config, cur, wide, openCust, setOpenCust, canManage,
         <div className="space-y-2">
           {c.trades.sort((a, b) => b.at - a.at).map((t) => {
             return (
-              <div key={t.id} className="rounded-xl border p-3" style={box}>
+              <div key={t.id} className="rounded-xl border p-4" style={box}>
                 <div className="flex justify-between">
                   <span className="text-[11px]" style={{ color: sub }}>{fmtDateDK(t.at)} · {fmtTimeDK(t.at)}</span>
                   <span className="font-black tabular-nums" style={{ color: dk ? GOLD : INK }}>{fmt(t.total)} {cur}</span>
@@ -2130,21 +2128,21 @@ function Customers({ sales, config, cur, wide, openCust, setOpenCust, canManage,
         <Search size={15} className="absolute left-2.5 top-2.5" style={{ color: sub }} />
         <input placeholder="Søg kunde-ID…" value={q} onChange={(e) => setQ(e.target.value)}
           className="w-full rounded-lg border pl-8 pr-3 py-2 text-sm"
-          style={dk ? { borderColor: "#3a3a3a", background: PANEL, color: "white" } : { borderColor: "#d6d3d1", background: "white" }} />
+          style={dk ? { borderColor: "rgba(255,255,255,.14)", background: PANEL, color: "white" } : { borderColor: "#d6d3d1", background: "white" }} />
       </div>
       {custs.length === 0 && <div className="text-sm py-6 text-center" style={{ color: sub }}>Ingen kunder endnu. Tilføj et kunde-ID, når du gemmer en handel.</div>}
       <div className="space-y-2">
         {shown.map((c) => {
           const { cur: lvl } = levelFor(c.points, config.levels);
           return (
-            <div key={c.id} className="w-full rounded-xl border p-3 flex items-center justify-between gap-2" style={box}>
+            <div key={c.id} className="w-full rounded-xl border p-4 flex items-center justify-between gap-2" style={box}>
               <button onClick={() => setOpenCust(c.id)} className="flex-1 min-w-0 text-left flex items-center justify-between gap-3">
                 <div>
                   <div className="font-black" style={{ color: dk ? "white" : INK }}>{c.id}</div>
                   <div className="text-[11px]" style={{ color: sub }}>{c.trades.length} handler · {c.points} point</div>
                 </div>
                 <div className="flex items-center gap-3">
-                  <span className="px-2.5 py-1 rounded-full text-[11px] font-black" style={{ background: dk ? "rgba(245,179,1,.15)" : "#fdf3e7", color: dk ? GOLD : GOLD_D }}>{lvl.name}</span>
+                  <span className="px-2.5 py-1 rounded-full text-[11px] font-black" style={{ background: dk ? "rgba(234,179,8,.15)" : "#fdf3e7", color: dk ? GOLD : GOLD_D }}>{lvl.name}</span>
                   <span className="font-black tabular-nums" style={{ color: dk ? GOLD : INK }}>{fmt(c.total)} {cur}</span>
                 </div>
               </button>
@@ -2172,7 +2170,7 @@ function Customers({ sales, config, cur, wide, openCust, setOpenCust, canManage,
 /* ── Lager ── */
 function InventoryView({ materials, inventory, cur, wide, canEdit, cash, tradeCounts, onSetQty, onSetCash }) {
   const dk = wide;
-  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const box = dk ? { background: PANEL, borderColor: "rgba(255,255,255,.08)" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
   const [q, setQ] = useState("");
   const [editing, setEditing] = useState(null);
@@ -2216,15 +2214,15 @@ function InventoryView({ materials, inventory, cur, wide, canEdit, cash, tradeCo
         )}
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">
-        <div className="rounded-xl border p-3" style={box}>
+        <div className="rounded-xl border p-4" style={box}>
           <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>Varer på lager</div>
           <div className="text-lg font-black tabular-nums" style={{ color: dk ? "white" : INK }}>{fmt(totalUnits)} stk.</div>
         </div>
-        <div className="rounded-xl border p-3" style={box}>
+        <div className="rounded-xl border p-4" style={box}>
           <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>Kostpris</div>
           <div className="text-lg font-black tabular-nums" style={{ color: dk ? "white" : INK }}>{fmt(totalValue)} {cur}</div>
         </div>
-        <div className="rounded-xl border p-3" style={box}>
+        <div className="rounded-xl border p-4" style={box}>
           <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>Potentiel salgsværdi</div>
           <div className="text-lg font-black tabular-nums" style={{ color: dk ? GOLD : GOLD_D }}>{fmt(totalResaleValue)} {cur}</div>
         </div>
@@ -2233,7 +2231,7 @@ function InventoryView({ materials, inventory, cur, wide, canEdit, cash, tradeCo
         <Search size={15} className="absolute left-2.5 top-2.5" style={{ color: sub }} />
         <input placeholder="Søg materiale…" value={q} onChange={(e) => setQ(e.target.value)}
           className="w-full rounded-lg border pl-8 pr-3 py-2 text-sm"
-          style={dk ? { borderColor: "#3a3a3a", background: PANEL, color: "white" } : { borderColor: "#d6d3d1", background: "white" }} />
+          style={dk ? { borderColor: "rgba(255,255,255,.14)", background: PANEL, color: "white" } : { borderColor: "#d6d3d1", background: "white" }} />
       </div>
       <div className="space-y-2">
         {shown.map((m) => {
@@ -2243,7 +2241,7 @@ function InventoryView({ materials, inventory, cur, wide, canEdit, cash, tradeCo
           const rowBg = isEmpty ? (dk ? "rgba(248,113,113,.07)" : "#fdf4f3") : isLow ? (dk ? "rgba(156,163,175,.08)" : "#f6f5f4") : box.background;
           const rowBorder = isEmpty ? (dk ? "#5c2b2b" : "#f3c9c6") : isLow ? (dk ? "#4a4a48" : "#e5e3e0") : box.borderColor;
           return (
-            <div key={m.id} className="rounded-xl border p-3 flex items-center justify-between" style={{ background: rowBg, borderColor: rowBorder }}>
+            <div key={m.id} className="rounded-xl border p-4 flex items-center justify-between" style={{ background: rowBg, borderColor: rowBorder }}>
               <div>
                 <div className="font-bold" style={{ color: dk ? "white" : INK }}>{m.name}</div>
                 <div className="text-[11px]" style={{ color: sub }}>
@@ -2260,7 +2258,7 @@ function InventoryView({ materials, inventory, cur, wide, canEdit, cash, tradeCo
                 </div>
               ) : (
                 <button onClick={() => canEdit && startEdit(m)} className="text-right" disabled={!canEdit}>
-                  <div className="text-xl font-black tabular-nums" style={{ color: isEmpty ? "#f87171" : isLow ? (dk ? "#facc15" : "#b45309") : (dk ? GOLD : INK) }}>
+                  <div className="text-xl font-black tabular-nums" style={{ color: isEmpty ? "#f43f5e" : isLow ? (dk ? "#facc15" : "#b45309") : (dk ? GOLD : INK) }}>
                     {fmt(qty)} <span className="text-xs font-bold" style={{ color: sub }}>stk.</span>
                   </div>
                   {canEdit && <div className="text-[10px] font-bold" style={{ color: dk ? GOLD : BLUE }}>Ret</div>}
@@ -2282,7 +2280,7 @@ function findMaterialByName(materials, name) {
 }
 function Crafting({ materials, inventory, wide, onCraft, recipes, canManageStore, onCreateRecipe, onUpdateRecipe, onDeleteRecipe }) {
   const dk = wide;
-  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const box = dk ? { background: PANEL, borderColor: "rgba(255,255,255,.08)" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
   const wrap = "pb-10 " + (dk ? "px-8 pt-6 mx-auto " : "px-3 pt-3 ") + (dk ? "text-white" : "");
   const wrapStyle = dk ? { maxWidth: PAGE_MAX } : {};
@@ -2324,7 +2322,7 @@ function Crafting({ materials, inventory, wide, onCraft, recipes, canManageStore
         {canManageStore && (
           <button onClick={() => setShowManager((v) => !v)}
             className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-black text-[11px]"
-            style={{ background: showManager ? GOLD : "rgba(245,179,1,.15)", color: showManager ? INK : (dk ? GOLD : BLUE) }}>
+            style={{ background: showManager ? GOLD : "rgba(234,179,8,.15)", color: showManager ? INK : (dk ? GOLD : BLUE) }}>
             <Pencil size={12} /> {showManager ? "Luk opskriftsredigering" : "Administrer opskrifter"}
           </button>
         )}
@@ -2358,9 +2356,9 @@ function Crafting({ materials, inventory, wide, onCraft, recipes, canManageStore
                 ? (dk ? "rgba(46,125,50,.08)" : GREEN_T)
                 : status === "unknown"
                   ? (dk ? "rgba(230,126,34,.08)" : "#fdf3e7")
-                  : (dk ? "rgba(192,57,43,.08)" : "#fdf0ef");
+                  : (dk ? "rgba(244,63,94,.08)" : "#fdf0ef");
               return (
-                <div key={r.id} className="rounded-xl border p-3" style={{ ...box, background: cardBg, borderColor: statusColor }}>
+                <div key={r.id} className="rounded-xl border p-4" style={{ ...box, background: cardBg, borderColor: statusColor }}>
                   <div className="flex items-start justify-between gap-2 mb-1.5">
                     <div className="font-black" style={{ color: dk ? "white" : INK }}>{displayName}</div>
                     <div className="flex items-center gap-1 text-[11px] font-bold shrink-0" style={{ color: sub }}>
@@ -2381,12 +2379,12 @@ function Crafting({ materials, inventory, wide, onCraft, recipes, canManageStore
                         ) : row.ok ? (
                           <div className="flex items-center justify-between">
                             <span style={{ color: sub }}>{row.req.qty}× {row.mat.name}</span>
-                            <span style={{ color: dk ? "#4ade80" : GREEN, fontWeight: 700 }}>{row.stock} på lager</span>
+                            <span style={{ color: dk ? "#34d399" : GREEN, fontWeight: 700 }}>{row.stock} på lager</span>
                           </div>
                         ) : (
                           <div className="flex items-center justify-between gap-2">
                             <span style={{ color: sub }}>{row.req.qty}× {row.mat.name}</span>
-                            <span style={{ color: "#f87171", fontWeight: 700 }}>
+                            <span style={{ color: "#f43f5e", fontWeight: 700 }}>
                               Mangler {row.req.qty - row.stock}× — har {row.stock}, kræver {row.req.qty}
                             </span>
                           </div>
@@ -2395,7 +2393,7 @@ function Crafting({ materials, inventory, wide, onCraft, recipes, canManageStore
                     ))}
                   </div>
                   {status === "ok" && (
-                    <div className="mt-2.5 pt-2.5" style={{ borderTop: `1px solid ${dk ? "#333" : "#e7e5e4"}` }}>
+                    <div className="mt-2.5 pt-2.5" style={{ borderTop: `1px solid ${dk ? "rgba(255,255,255,.08)" : "#e7e5e4"}` }}>
                       <div className="flex items-center gap-2">
                         <input type="number" inputMode="numeric" min={1} max={maxTotal}
                           value={qtyByRecipe[r.id] ?? 1}
@@ -2414,7 +2412,7 @@ function Crafting({ materials, inventory, wide, onCraft, recipes, canManageStore
                     </div>
                   )}
                   {msgByRecipe[r.id] && (
-                    <div className="text-[11px] font-bold mt-2" style={{ color: msgByRecipe[r.id].type === "ok" ? (dk ? "#4ade80" : GREEN) : "#f87171" }}>
+                    <div className="text-[11px] font-bold mt-2" style={{ color: msgByRecipe[r.id].type === "ok" ? (dk ? "#34d399" : GREEN) : "#f43f5e" }}>
                       {msgByRecipe[r.id].text}
                     </div>
                   )}
@@ -2439,10 +2437,10 @@ function Crafting({ materials, inventory, wide, onCraft, recipes, canManageStore
    den rigtige vare. ── */
 function RecipeManager({ materials, recipes, wide, onCreate, onUpdate, onDelete }) {
   const dk = wide;
-  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const box = dk ? { background: PANEL, borderColor: "rgba(255,255,255,.08)" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
   const inp = "rounded-lg border px-2 py-2 text-sm w-full " + (dk ? "" : "border-stone-300 bg-white");
-  const inpStyle = dk ? { borderColor: "#3a3a3a", background: PANEL, color: "white" } : {};
+  const inpStyle = dk ? { borderColor: "rgba(255,255,255,.14)", background: PANEL, color: "white" } : {};
 
   const emptyForm = { outputMaterialId: "", outputQty: 1, cat: "", time: "", mats: [{ materialId: "", qty: "" }] };
   const [form, setForm] = useState(emptyForm);
@@ -2582,7 +2580,7 @@ function RecipeManager({ materials, recipes, wide, onCreate, onUpdate, onDelete 
       </div>
 
       {recipes.length > 0 && (
-        <div className="mt-6 pt-4" style={{ borderTop: `1px solid ${dk ? "#333" : "#e7e5e4"}` }}>
+        <div className="mt-6 pt-4" style={{ borderTop: `1px solid ${dk ? "rgba(255,255,255,.08)" : "#e7e5e4"}` }}>
           <div className="text-[11px] font-bold mb-2" style={{ color: sub }}>Alle opskrifter ({recipes.length})</div>
           <div className="space-y-1.5">
             {recipes.map((r) => {
@@ -2625,10 +2623,10 @@ function RecipeManager({ materials, recipes, wide, onCreate, onUpdate, onDelete 
    vej, uanset hvad klienten sender). */
 function StaffAdmin({ staffList, refresh, myId, wide, canFullyManage }) {
   const dk = wide;
-  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const box = dk ? { background: PANEL, borderColor: "rgba(255,255,255,.08)" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
   const inp = "rounded-lg border px-2 py-2 text-sm " + (dk ? "" : "border-stone-300 bg-white");
-  const inpStyle = dk ? { borderColor: "#3a3a3a", background: PANEL, color: "white" } : {};
+  const inpStyle = dk ? { borderColor: "rgba(255,255,255,.14)", background: PANEL, color: "white" } : {};
   const wrap = "pb-10 " + (dk ? "px-8 pt-6 mx-auto " : "px-3 pt-3 ") + (dk ? "text-white" : "");
   const wrapStyle = dk ? { maxWidth: PAGE_MAX } : {};
 
@@ -2684,7 +2682,7 @@ function StaffAdmin({ staffList, refresh, myId, wide, canFullyManage }) {
       {err && <div className="text-xs font-semibold mb-2" style={{ color: RED }}>{err}</div>}
       <div className="space-y-2 mb-4">
         {staffList.map((p) => (
-          <div key={p.id} className="rounded-xl border p-3" style={box}>
+          <div key={p.id} className="rounded-xl border p-4" style={box}>
             {editing === p.id ? (
               <div className="space-y-2">
                 {canFullyManage && (
@@ -2785,10 +2783,10 @@ const toLocalDatetimeInput = (iso) => {
 
 function LeaderboardAdmin({ sales, cur, wide, settings, onSave, canManage }) {
   const dk = wide;
-  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const box = dk ? { background: PANEL, borderColor: "rgba(255,255,255,.08)" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
   const inp = "rounded-lg border px-3 py-2 text-sm w-full " + (dk ? "" : "border-stone-300 bg-white");
-  const inpStyle = dk ? { borderColor: "#3a3a3a", background: PANEL, color: "white" } : {};
+  const inpStyle = dk ? { borderColor: "rgba(255,255,255,.14)", background: PANEL, color: "white" } : {};
   const wrap = "pb-10 " + (dk ? "px-8 pt-6 mx-auto " : "px-3 pt-3 ") + (dk ? "text-white" : "");
   const wrapStyle = dk ? { maxWidth: PAGE_MAX } : {};
 
@@ -2873,7 +2871,7 @@ function LeaderboardAdmin({ sales, cur, wide, settings, onSave, canManage }) {
           </div>
           <button onClick={() => setForm({ ...form, active: !form.active })}
             className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg font-bold text-sm text-left"
-            style={form.active ? { background: GREEN, color: "white" } : { background: dk ? "#2a2a2a" : "#f5f5f4", color: sub }}>
+            style={form.active ? { background: GREEN, color: "white" } : { background: dk ? "rgba(255,255,255,.06)" : "#f5f5f4", color: sub }}>
             <span>Konkurrence er {form.active ? "AKTIV — synlig på den offentlige side" : "inaktiv — skjult for offentligheden"}</span>
             <span className="inline-flex items-center shrink-0 w-9 h-5 rounded-full relative ml-2" style={{ background: form.active ? "rgba(255,255,255,.35)" : (dk ? "#444" : "#d6d3d1") }}>
               <span className="absolute w-4 h-4 top-0.5 rounded-full bg-white" style={{ left: form.active ? 18 : 2 }} />
@@ -2892,7 +2890,7 @@ function LeaderboardAdmin({ sales, cur, wide, settings, onSave, canManage }) {
           <div className="flex items-center justify-between">
             <span className="font-bold" style={{ color: dk ? "white" : INK }}>{settings?.name || "Konkurrence"}</span>
             <span className="px-2.5 py-1 rounded-full text-[11px] font-bold"
-              style={settings?.active ? { background: GREEN, color: "white" } : { background: dk ? "#2a2a2a" : "#f5f5f4", color: sub }}>
+              style={settings?.active ? { background: GREEN, color: "white" } : { background: dk ? "rgba(255,255,255,.06)" : "#f5f5f4", color: sub }}>
               {settings?.active ? "AKTIV" : "Inaktiv"}
             </span>
           </div>
@@ -2950,7 +2948,7 @@ function LoginScreen({ username, setUsername, password, setPassword, err, busy, 
             className="w-full rounded-lg border px-3 py-2.5 text-sm font-bold"
             style={{ borderColor: "#444", background: "#111", color: "white" }} />
         </label>
-        {err && <div className="text-xs font-semibold mt-2" style={{ color: "#f87171" }}>{err}</div>}
+        {err && <div className="text-xs font-semibold mt-2" style={{ color: "#f43f5e" }}>{err}</div>}
         <button type="submit" disabled={busy || !username.trim() || !password.trim()}
           className="w-full mt-4 flex items-center justify-center gap-1.5 py-3 rounded-xl font-black text-base disabled:opacity-50"
           style={{ background: GOLD, color: INK }}>
@@ -3175,7 +3173,7 @@ function ReceiptModal({ trade, config, pending, saving, onConfirm, onCancel, onC
           {pending && (
             <button onClick={onCancel} aria-label="Annullér handlen" title="Annullér handlen"
               className="absolute top-3 right-3 w-7 h-7 rounded-full flex items-center justify-center"
-              style={{ color: GOLD, background: "rgba(245,179,1,.15)" }}>
+              style={{ color: GOLD, background: "rgba(234,179,8,.15)" }}>
               <X size={15} />
             </button>
           )}
@@ -3260,7 +3258,7 @@ function CraftCheckModal({ matches, onDecide }) {
         <div className="relative px-5 py-4" style={{ background: INK, borderBottom: `3px solid ${GOLD}` }}>
           <button onClick={handleSkip} aria-label="Luk" title="Luk"
             className="absolute top-3 right-3 w-7 h-7 rounded-full flex items-center justify-center"
-            style={{ color: GOLD, background: "rgba(245,179,1,.15)" }}>
+            style={{ color: GOLD, background: "rgba(234,179,8,.15)" }}>
             <X size={15} />
           </button>
           <div className="flex items-center gap-2 text-white font-black text-base pr-8"><Hammer size={17} color={GOLD} /> Craftede du disse?</div>
@@ -3362,7 +3360,7 @@ function TradeAmountEditor({ dk, cur, total, onSave }) {
 function SalesLog({ sales, cur, wide, onClear, onReverse, onEditCustomer, onEditAmount, role }) {
   const [period, setPeriod] = useState("dag"); // dag | uge | måned | alt
   const dk = wide;
-  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const box = dk ? { background: PANEL, borderColor: "rgba(255,255,255,.08)" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
   // "Fortryd handel" og "Ret beløb" må kun bruges af ejer/manager — samme rolle-tjek
   // som databasen nu også kræver for direkte UPDATE/DELETE på "sales" (se
@@ -3390,7 +3388,7 @@ function SalesLog({ sales, cur, wide, onClear, onReverse, onEditCustomer, onEdit
 
   return (
     <div className={"pb-10 " + (dk ? "px-8 pt-6 mx-auto text-white" : "px-3 pt-3")} style={dk ? { maxWidth: 900 } : {}}>
-      <div className="flex rounded-lg overflow-hidden border text-xs font-black mb-3" style={{ borderColor: dk ? "#3a3a3a" : "#d6d3d1" }}>
+      <div className="flex rounded-lg overflow-hidden border text-xs font-black mb-3" style={{ borderColor: dk ? "rgba(255,255,255,.14)" : "#d6d3d1" }}>
         {[["dag", "I dag"], ["uge", "7 dage"], ["måned", "30 dage"], ["alt", "Alt"]].map(([v, l]) => (
           <button key={v} onClick={() => setPeriod(v)} className="flex-1 py-2"
             style={period === v ? { background: GOLD, color: INK } : { background: dk ? PANEL : "white", color: sub }}>{l}</button>
@@ -3398,10 +3396,10 @@ function SalesLog({ sales, cur, wide, onClear, onReverse, onEditCustomer, onEdit
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
         {[["Handler", inPeriod.length, dk ? "white" : INK],
-          ["Udgifter (køb)", fmt(udgifter) + " " + cur, dk ? "#f87171" : RED],
-          ["Indtægter (salg)", fmt(indtaegter) + " " + cur, dk ? "#4ade80" : GREEN],
-          ["Overskud", fmt(overskud) + " " + cur, overskud >= 0 ? (dk ? "#4ade80" : GREEN) : (dk ? "#f87171" : RED)]].map(([l, v, c]) => (
-          <div key={l} className="rounded-xl border p-3" style={box}>
+          ["Udgifter (køb)", fmt(udgifter) + " " + cur, dk ? "#f43f5e" : RED],
+          ["Indtægter (salg)", fmt(indtaegter) + " " + cur, dk ? "#34d399" : GREEN],
+          ["Overskud", fmt(overskud) + " " + cur, overskud >= 0 ? (dk ? "#34d399" : GREEN) : (dk ? "#f43f5e" : RED)]].map(([l, v, c]) => (
+          <div key={l} className="rounded-xl border p-4" style={box}>
             <div className="text-[10px] uppercase font-bold" style={{ color: sub }}>{l}</div>
             <div className="text-lg font-black tabular-nums" style={{ color: c }}>{v}</div>
           </div>
@@ -3410,7 +3408,7 @@ function SalesLog({ sales, cur, wide, onClear, onReverse, onEditCustomer, onEdit
       <div className="flex items-center justify-between mb-2">
         <div className="text-xs font-black uppercase tracking-wider" style={{ color: dk ? GOLD : BLUE }}>Handler i perioden</div>
         {role === "ejer" && sales.length > 0 && (
-          <button onClick={onClear} className="text-[11px] font-bold" style={{ color: dk ? "#f87171" : RED }}>Ryd alle</button>
+          <button onClick={onClear} className="text-[11px] font-bold" style={{ color: dk ? "#f43f5e" : RED }}>Ryd alle</button>
         )}
       </div>
       {inPeriod.length === 0 && <div className="text-sm py-6 text-center" style={{ color: sub }}>Ingen handler i denne periode.</div>}
@@ -3426,21 +3424,21 @@ function SalesLog({ sales, cur, wide, onClear, onReverse, onEditCustomer, onEdit
           const isGain = isSell || (hasCounter && netAmount >= 0);
           const amountPrefix = hasCounter && !isSell && netAmount >= 0 ? "+" : "";
           return (
-            <div key={t.id} className="rounded-xl border p-3" style={box}>
+            <div key={t.id} className="rounded-xl border p-4" style={box}>
               <div className="flex items-center justify-between">
                 <div className="text-[11px] flex items-center gap-1.5" style={{ color: sub }}>
-                  <span className="px-1.5 py-0.5 rounded font-bold" style={isSell ? { background: "rgba(74,222,128,.15)", color: dk ? "#4ade80" : GREEN } : { background: "rgba(245,179,1,.15)", color: dk ? GOLD : GOLD_D }}>
-                    {isSell ? "🏷️ Salg" : "💰 Køb"}
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full font-bold" style={isSell ? { background: "rgba(52,211,153,.15)", color: dk ? "#34d399" : GREEN } : { background: "rgba(234,179,8,.15)", color: dk ? GOLD : GOLD_D }}>
+                    {isSell ? <TrendingUp size={11} /> : <TrendingDown size={11} />} {isSell ? "Salg" : "Køb"}
                   </span>
                   {fmtDateDK(t.at)} · {fmtTimeDK(t.at)}
                   {t.sellerName && ` · af ${t.sellerName}`}
                 </div>
                 <div className="flex items-center gap-3">
-                  <span className="font-black tabular-nums" style={{ color: isGain ? (dk ? "#4ade80" : GREEN) : (dk ? "#f87171" : RED) }}>{amountPrefix}{fmt(netAmount)} {cur}</span>
+                  <span className="font-black tabular-nums" style={{ color: isGain ? (dk ? "#34d399" : GREEN) : (dk ? "#f43f5e" : RED) }}>{amountPrefix}{fmt(netAmount)} {cur}</span>
                   {canManage && (
                     <button onClick={() => onReverse(t)}
                       className="flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-bold"
-                      style={{ color: RED, background: dk ? "rgba(192,57,43,.15)" : "#fdf0ef" }}>
+                      style={{ color: RED, background: dk ? "rgba(244,63,94,.15)" : "#fdf0ef" }}>
                       <RotateCcw size={13} /> Fortryd
                     </button>
                   )}
@@ -3450,7 +3448,7 @@ function SalesLog({ sales, cur, wide, onClear, onReverse, onEditCustomer, onEdit
                 {t.custId ? `ID ${t.custId} · ` : ""}{t.lines.map((l) => `${l.qty}× ${l.name}`).join(" · ")}
                 {t.points ? ` · +${t.points}p` : ""}
               </div>
-              <div className="flex items-center gap-4 mt-2 pt-2" style={{ borderTop: `1px solid ${dk ? "#2a2a2a" : "#f0efed"}` }}>
+              <div className="flex items-center gap-4 mt-2 pt-2" style={{ borderTop: `1px solid ${dk ? "rgba(255,255,255,.06)" : "#f0efed"}` }}>
                 <TradeCustIdEditor dk={dk} custId={t.custId} onSave={(v) => onEditCustomer(t, v)} />
                 {canManage && <TradeAmountEditor dk={dk} cur={cur} total={t.total} onSave={(v) => onEditAmount(t, v)} />}
               </div>
@@ -3480,7 +3478,7 @@ function SalesLog({ sales, cur, wide, onClear, onReverse, onEditCustomer, onEdit
 // af Hjem).
 function ShiftStatusCard({ profile, activeShifts, wide, err, onClockIn, onClockOut }) {
   const dk = wide;
-  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const box = dk ? { background: PANEL, borderColor: "rgba(255,255,255,.08)" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
   const [busy, setBusy] = useState(false);
   const myShift = activeShifts.find((s) => s.userId === profile.id);
@@ -3492,13 +3490,13 @@ function ShiftStatusCard({ profile, activeShifts, wide, err, onClockIn, onClockO
   return (
     <div>
       {err && (
-        <div className="mb-2 px-3 py-2 rounded-lg text-sm font-bold" style={{ background: "rgba(192,57,43,.15)", color: RED }}>{err}</div>
+        <div className="mb-2 px-3 py-2 rounded-lg text-sm font-bold" style={{ background: "rgba(244,63,94,.15)", color: RED }}>{err}</div>
       )}
       <div className="rounded-xl border p-4 flex items-center justify-between gap-3 flex-wrap" style={box}>
         <div>
           <div className="text-xs font-black uppercase tracking-wider mb-1" style={{ color: dk ? GOLD : BLUE }}>Din vagt</div>
           {myShift ? (
-            <div className="text-sm font-bold" style={{ color: dk ? "#4ade80" : GREEN }}>● På vagt siden kl. {fmtHM(myShift.clockIn)}</div>
+            <div className="text-sm font-bold" style={{ color: dk ? "#34d399" : GREEN }}>● På vagt siden kl. {fmtHM(myShift.clockIn)}</div>
           ) : (
             <div className="text-sm" style={{ color: sub }}>Ikke på vagt</div>
           )}
@@ -3517,7 +3515,7 @@ function ShiftStatusCard({ profile, activeShifts, wide, err, onClockIn, onClockO
 
 function ShiftView({ profile, activeShifts, shiftLog, shiftLogLoading, staffList, canManageStore, isOwner, wide, err, onClockIn, onClockOut, onCloseShift, onEditShift }) {
   const dk = wide;
-  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const box = dk ? { background: PANEL, borderColor: "rgba(255,255,255,.08)" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
   const [period, setPeriod] = useState("dag"); // dag | uge | måned | alt — samme som Dagbog
   const [editingId, setEditingId] = useState(null);
@@ -3599,7 +3597,7 @@ function ShiftView({ profile, activeShifts, shiftLog, shiftLogLoading, staffList
 
       {canManageStore && (
         <>
-          <div className="flex rounded-lg overflow-hidden border text-xs font-black mb-3" style={{ borderColor: dk ? "#3a3a3a" : "#d6d3d1" }}>
+          <div className="flex rounded-lg overflow-hidden border text-xs font-black mb-3" style={{ borderColor: dk ? "rgba(255,255,255,.14)" : "#d6d3d1" }}>
             {[["dag", "I dag"], ["uge", "7 dage"], ["måned", "30 dage"], ["alt", "Alt"]].map(([v, l]) => (
               <button key={v} onClick={() => setPeriod(v)} className="flex-1 py-2"
                 style={period === v ? { background: GOLD, color: INK } : { background: dk ? PANEL : "white", color: sub }}>{l}</button>
@@ -3614,7 +3612,7 @@ function ShiftView({ profile, activeShifts, shiftLog, shiftLogLoading, staffList
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-4">
               {empRows.map((r) => (
-                <div key={r.name} className="rounded-xl border p-3 flex items-center justify-between" style={box}>
+                <div key={r.name} className="rounded-xl border p-4 flex items-center justify-between" style={box}>
                   <span className="font-bold" style={{ color: dk ? "white" : INK }}>{r.name}</span>
                   <span className="text-sm" style={{ color: sub }}>{r.count} vagt{r.count === 1 ? "" : "er"} · {fmtDur(r.ms)}</span>
                 </div>
@@ -3672,7 +3670,7 @@ function ShiftDayGroup({ group, dk, box, sub, isOwner, expanded, onToggle, editi
       {expanded && (
         <div className="p-3 pt-0 space-y-2">
           {group.shifts.map((s) => (
-            <ShiftLogRow key={s.id} shift={s} dk={dk} box={dk ? { background: "#141414", borderColor: "#2a2a2a" } : { background: "#fafaf9", borderColor: "#e7e5e4" }} sub={sub} isOwner={isOwner}
+            <ShiftLogRow key={s.id} shift={s} dk={dk} box={dk ? { background: "#0d0f12", borderColor: "rgba(255,255,255,.06)" } : { background: "#fafaf9", borderColor: "#e7e5e4" }} sub={sub} isOwner={isOwner}
               editing={editingId === s.id} onStartEdit={() => onStartEdit(s.id)} onCancelEdit={onCancelEdit}
               onCloseShift={onCloseShift}
               onSaveEdit={(ci, co) => onSaveEdit(s.id, ci, co)} />
@@ -3697,10 +3695,10 @@ function ShiftLogRow({ shift, dk, box, sub, isOwner, editing, onStartEdit, onCan
   const isOpen = !shift.clockOut;
   const durMin = Math.max(0, Math.round(((shift.clockOut || Date.now()) - shift.clockIn) / 60000));
   const durTxt = `${Math.floor(durMin / 60)}t ${durMin % 60}m`;
-  const inputStyle = { borderColor: dk ? "#3a3a3a" : "#d6d3d1", background: dk ? "#141414" : "white", color: dk ? "white" : INK };
+  const inputStyle = { borderColor: dk ? "rgba(255,255,255,.14)" : "#d6d3d1", background: dk ? "#0d0f12" : "white", color: dk ? "white" : INK };
 
   return (
-    <div className="rounded-xl border p-3" style={box}>
+    <div className="rounded-xl border p-4" style={box}>
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <div className="font-bold" style={{ color: dk ? "white" : INK }}>{shift.name}</div>
@@ -3718,14 +3716,14 @@ function ShiftLogRow({ shift, dk, box, sub, isOwner, editing, onStartEdit, onCan
                 style={{ color: dk ? "#facc15" : "#b45309", background: dk ? "rgba(250,204,21,.12)" : "#fdf6e3" }}>Luk vagt</button>
             )}
             <button onClick={onStartEdit} className="text-[11px] font-bold px-2 py-1 rounded-md flex items-center gap-1"
-              style={{ color: dk ? GOLD : BLUE, background: dk ? "rgba(245,179,1,.12)" : BLUE_T }}>
+              style={{ color: dk ? GOLD : BLUE, background: dk ? "rgba(234,179,8,.12)" : BLUE_T }}>
               <Pencil size={11} /> Ret
             </button>
           </div>
         )}
       </div>
       {editing && (
-        <div className="mt-3 pt-3 flex flex-wrap items-end gap-2" style={{ borderTop: `1px solid ${dk ? "#2a2a2a" : "#f0efed"}` }}>
+        <div className="mt-3 pt-3 flex flex-wrap items-end gap-2" style={{ borderTop: `1px solid ${dk ? "rgba(255,255,255,.06)" : "#f0efed"}` }}>
           <div>
             <div className="text-[10px] uppercase font-bold mb-1" style={{ color: sub }}>Ind</div>
             <input type="datetime-local" value={ciVal} onChange={(e) => setCiVal(e.target.value)}
@@ -3738,7 +3736,7 @@ function ShiftLogRow({ shift, dk, box, sub, isOwner, editing, onStartEdit, onCan
           </div>
           <button onClick={() => onSaveEdit(new Date(ciVal).getTime(), coVal ? new Date(coVal).getTime() : null)}
             className="px-3 py-1.5 rounded-full font-black text-xs" style={{ background: GOLD, color: INK }}>Gem</button>
-          <button onClick={onCancelEdit} className="px-3 py-1.5 rounded-full font-black text-xs" style={{ background: dk ? "#2a2a2a" : "#f0efed", color: sub }}>Annuller</button>
+          <button onClick={onCancelEdit} className="px-3 py-1.5 rounded-full font-black text-xs" style={{ background: dk ? "rgba(255,255,255,.06)" : "#f0efed", color: sub }}>Annuller</button>
         </div>
       )}
     </div>
@@ -3767,7 +3765,7 @@ function ShiftExport({ staffList, shiftLog, shiftLogLoading, dk, box, sub }) {
     const totalMin = Math.max(0, Math.round(ms / 60000));
     return `${Math.floor(totalMin / 60)}:${String(totalMin % 60).padStart(2, "0")}`;
   };
-  const inputStyle = { borderColor: dk ? "#3a3a3a" : "#d6d3d1", background: dk ? "#141414" : "white", color: dk ? "white" : INK };
+  const inputStyle = { borderColor: dk ? "rgba(255,255,255,.14)" : "#d6d3d1", background: dk ? "#0d0f12" : "white", color: dk ? "white" : INK };
 
   // "Fra"/"Til" tolkes som HELE dage i lokal tid (00:00:00 til 23:59:59.999), så en
   // vagt, der starter sidst på "til"-dagen, ikke falder udenfor ved en kant-fejl.
@@ -3847,7 +3845,7 @@ function ShiftExport({ staffList, shiftLog, shiftLogLoading, dk, box, sub }) {
           <div className="space-y-1.5 max-h-72 overflow-y-auto mb-3 pr-1">
             {rows.map((s) => (
               <div key={s.id} className="flex items-center justify-between gap-2 text-sm py-1"
-                style={{ borderBottom: `1px solid ${dk ? "#2a2a2a" : "#f0efed"}` }}>
+                style={{ borderBottom: `1px solid ${dk ? "rgba(255,255,255,.06)" : "#f0efed"}` }}>
                 <span className="min-w-0 truncate" style={{ color: dk ? "white" : INK }}>
                   {empId === "alle" ? `${s.name} · ` : ""}{fmtDate(s.clockIn)}
                 </span>
@@ -3857,7 +3855,7 @@ function ShiftExport({ staffList, shiftLog, shiftLogLoading, dk, box, sub }) {
               </div>
             ))}
           </div>
-          <div className="flex items-center justify-between pt-2 font-black text-sm" style={{ borderTop: `2px solid ${dk ? "#333" : "#e7e5e4"}` }}>
+          <div className="flex items-center justify-between pt-2 font-black text-sm" style={{ borderTop: `2px solid ${dk ? "rgba(255,255,255,.08)" : "#e7e5e4"}` }}>
             <span style={{ color: dk ? "white" : INK }}>{rows.length} vagt{rows.length === 1 ? "" : "er"} i alt</span>
             <span style={{ color: dk ? GOLD : GOLD_D }}>Total: {fmtDuration(totalMs)} timer</span>
           </div>
@@ -3886,7 +3884,7 @@ function ShiftExport({ staffList, shiftLog, shiftLogLoading, dk, box, sub }) {
    endnu, som ønsket. */
 function StaffOverview({ sales, shiftLog, shiftLogLoading, staffList, cur, wide }) {
   const dk = wide;
-  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const box = dk ? { background: PANEL, borderColor: "rgba(255,255,255,.08)" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
   const todayStr = () => new Date().toISOString().slice(0, 10);
   const monthAgoStr = () => new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
@@ -3894,7 +3892,7 @@ function StaffOverview({ sales, shiftLog, shiftLogLoading, staffList, cur, wide 
   const [toDate, setToDate] = useState(todayStr());
   const [sortBy, setSortBy] = useState("profit"); // profit | perHour
 
-  const inputStyle = { borderColor: dk ? "#3a3a3a" : "#d6d3d1", background: dk ? "#141414" : "white", color: dk ? "white" : INK };
+  const inputStyle = { borderColor: dk ? "rgba(255,255,255,.14)" : "#d6d3d1", background: dk ? "#0d0f12" : "white", color: dk ? "white" : INK };
   // "t:mm" (timer:minutter) — samme format som ShiftExport, for genkendelighed.
   const fmtDuration = (ms) => {
     const totalMin = Math.max(0, Math.round(ms / 60000));
@@ -3971,7 +3969,7 @@ function StaffOverview({ sales, shiftLog, shiftLogLoading, staffList, cur, wide 
           <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)}
             className="rounded-lg border px-2 py-1.5 text-sm" style={inputStyle} />
         </div>
-        <div className="flex rounded-lg overflow-hidden border text-xs font-black" style={{ borderColor: dk ? "#3a3a3a" : "#d6d3d1" }}>
+        <div className="flex rounded-lg overflow-hidden border text-xs font-black" style={{ borderColor: dk ? "rgba(255,255,255,.14)" : "#d6d3d1" }}>
           {[["profit", "Avance"], ["perHour", "Avance/time"]].map(([v, l]) => (
             <button key={v} onClick={() => setSortBy(v)} className="px-3 py-2"
               style={sortBy === v ? { background: GOLD, color: INK } : { background: dk ? PANEL : "white", color: sub }}>{l}</button>
@@ -3991,10 +3989,10 @@ function StaffOverview({ sales, shiftLog, shiftLogLoading, staffList, cur, wide 
       ) : (
         <div className="space-y-2 mb-4">
           {rows.map((r) => (
-            <div key={r.id} className="rounded-xl border p-3" style={box}>
+            <div key={r.id} className="rounded-xl border p-4" style={box}>
               <div className="flex items-center justify-between mb-2">
                 <span className="font-bold" style={{ color: dk ? "white" : INK }}>{r.name}</span>
-                <span className="font-black tabular-nums" style={{ color: r.profit >= 0 ? (dk ? "#4ade80" : GREEN) : (dk ? "#f87171" : RED) }}>
+                <span className="font-black tabular-nums" style={{ color: r.profit >= 0 ? (dk ? "#34d399" : GREEN) : (dk ? "#f43f5e" : RED) }}>
                   {fmt(r.profit)} {cur}
                 </span>
               </div>
@@ -4011,7 +4009,7 @@ function StaffOverview({ sales, shiftLog, shiftLogLoading, staffList, cur, wide 
       )}
 
       {rows.length > 0 && (
-        <div className="flex items-center justify-between pt-2 font-black text-sm flex-wrap gap-1" style={{ borderTop: `2px solid ${dk ? "#333" : "#e7e5e4"}` }}>
+        <div className="flex items-center justify-between pt-2 font-black text-sm flex-wrap gap-1" style={{ borderTop: `2px solid ${dk ? "rgba(255,255,255,.08)" : "#e7e5e4"}` }}>
           <span style={{ color: dk ? "white" : INK }}>{rows.length} medarbejder{rows.length === 1 ? "" : "e"} · {fmtDuration(totals.hoursMs)} timer i alt</span>
           <span style={{ color: dk ? GOLD : GOLD_D }}>
             Total avance: {fmt(totals.profit)} {cur}{totalPerHour != null ? ` · ${fmt(totalPerHour)} ${cur}/t` : ""}
@@ -4105,9 +4103,9 @@ function describeActivity(e, cur) {
    dato-vælgeren fra hhv. ShiftView og ShiftExport/StaffOverview ovenfor. */
 function ActivityLogView({ entries, loading, cur, wide }) {
   const dk = wide;
-  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const box = dk ? { background: PANEL, borderColor: "rgba(255,255,255,.08)" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
-  const inputStyle = { borderColor: dk ? "#3a3a3a" : "#d6d3d1", background: dk ? "#141414" : "white", color: dk ? "white" : INK };
+  const inputStyle = { borderColor: dk ? "rgba(255,255,255,.14)" : "#d6d3d1", background: dk ? "#0d0f12" : "white", color: dk ? "white" : INK };
 
   const todayStr = () => new Date().toISOString().slice(0, 10);
   const daysAgoStr = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
@@ -4144,7 +4142,7 @@ function ActivityLogView({ entries, loading, cur, wide }) {
         Hvem gjorde hvad hvornår — pris-ændringer, kasse-rettelser, fortrudte/rettede handler, slettede kunder/varer, vagt-rettelser og medarbejder-/rolle-ændringer. Kun læsning; ændrer intet. Kun synlig for ejeren.
       </div>
 
-      <div className="flex rounded-lg overflow-hidden border text-xs font-black mb-3" style={{ borderColor: dk ? "#3a3a3a" : "#d6d3d1" }}>
+      <div className="flex rounded-lg overflow-hidden border text-xs font-black mb-3" style={{ borderColor: dk ? "rgba(255,255,255,.14)" : "#d6d3d1" }}>
         {[["dag", "I dag"], ["uge", "7 dage"], ["måned", "30 dage"], ["alt", "Alt"]].map(([v, l]) => (
           <button key={v} onClick={() => applyPreset(v)} className="flex-1 py-2"
             style={period === v ? { background: GOLD, color: INK } : { background: dk ? PANEL : "white", color: sub }}>{l}</button>
@@ -4187,7 +4185,7 @@ function ActivityLogView({ entries, loading, cur, wide }) {
       ) : (
         <div className="space-y-2">
           {rows.map((e) => (
-            <div key={e.id} className="rounded-xl border p-3" style={box}>
+            <div key={e.id} className="rounded-xl border p-4" style={box}>
               <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
                 <span className="font-bold" style={{ color: dk ? GOLD : GOLD_D }}>{ACTIVITY_LABELS[e.action] || e.action}</span>
                 <span className="text-[11px] tabular-nums" style={{ color: sub }}>{fmtDateDK(e.atMs)} · {fmtTimeDK(e.atMs)}</span>
@@ -4214,7 +4212,7 @@ function ActivityLogView({ entries, loading, cur, wide }) {
 function TopMarginItems({ sales, config, cur, wide }) {
   const [period, setPeriod] = useState("dag"); // dag | uge | måned | alt — samme som Dagbog
   const dk = wide;
-  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const box = dk ? { background: PANEL, borderColor: "rgba(255,255,255,.08)" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
 
   const now = Date.now();
@@ -4243,7 +4241,7 @@ function TopMarginItems({ sales, config, cur, wide }) {
 
   return (
     <div className={"pb-10 " + (dk ? "px-8 pt-6 mx-auto text-white" : "px-3 pt-3")} style={dk ? { maxWidth: 900 } : {}}>
-      <div className="flex rounded-lg overflow-hidden border text-xs font-black mb-3" style={{ borderColor: dk ? "#3a3a3a" : "#d6d3d1" }}>
+      <div className="flex rounded-lg overflow-hidden border text-xs font-black mb-3" style={{ borderColor: dk ? "rgba(255,255,255,.14)" : "#d6d3d1" }}>
         {[["dag", "I dag"], ["uge", "7 dage"], ["måned", "30 dage"], ["alt", "Alt"]].map(([v, l]) => (
           <button key={v} onClick={() => setPeriod(v)} className="flex-1 py-2"
             style={period === v ? { background: GOLD, color: INK } : { background: dk ? PANEL : "white", color: sub }}>{l}</button>
@@ -4256,7 +4254,7 @@ function TopMarginItems({ sales, config, cur, wide }) {
       {rows.length === 0 && <div className="text-sm py-6 text-center" style={{ color: sub }}>Ingen salg i denne periode.</div>}
       <div className="space-y-2">
         {rows.map((r, i) => (
-          <div key={r.name} className="rounded-xl border p-3 flex items-center justify-between gap-2" style={box}>
+          <div key={r.name} className="rounded-xl border p-4 flex items-center justify-between gap-2" style={box}>
             <div className="flex items-center gap-3 min-w-0">
               <div className="w-6 text-center font-black text-xs shrink-0" style={{ color: dk ? "#666" : "#a8a29e" }}>{i + 1}</div>
               <div className="min-w-0">
@@ -4265,7 +4263,7 @@ function TopMarginItems({ sales, config, cur, wide }) {
               </div>
             </div>
             <div className="text-right shrink-0">
-              <div className="font-black tabular-nums" style={{ color: r.margin >= 0 ? (dk ? "#4ade80" : GREEN) : (dk ? "#f87171" : RED) }}>{fmt(r.margin)} {cur}</div>
+              <div className="font-black tabular-nums" style={{ color: r.margin >= 0 ? (dk ? "#34d399" : GREEN) : (dk ? "#f43f5e" : RED) }}>{fmt(r.margin)} {cur}</div>
               <div className="text-[10px]" style={{ color: sub }}>avance (est.)</div>
             </div>
           </div>
@@ -4282,7 +4280,7 @@ function TopMarginItems({ sales, config, cur, wide }) {
    der kan ændre data (ingen slet-knap, ingen redigering). */
 function TopCustomers({ sales, config, cur, wide }) {
   const dk = wide;
-  const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const box = dk ? { background: PANEL, borderColor: "rgba(255,255,255,.08)" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
   const custs = buildCustomers(sales);
   const wrap = "pb-10 " + (dk ? "px-8 pt-6 mx-auto " : "px-3 pt-3 ") + (dk ? "text-white" : "");
@@ -4296,7 +4294,7 @@ function TopCustomers({ sales, config, cur, wide }) {
         {custs.map((c, i) => {
           const { cur: lvl } = levelFor(c.points, config.levels);
           return (
-            <div key={c.id} className="w-full rounded-xl border p-3 flex items-center justify-between gap-2" style={box}>
+            <div key={c.id} className="w-full rounded-xl border p-4 flex items-center justify-between gap-2" style={box}>
               <div className="flex items-center gap-3 min-w-0">
                 <div className="w-6 text-center font-black text-xs shrink-0" style={{ color: dk ? "#666" : "#a8a29e" }}>{i + 1}</div>
                 <div className="min-w-0">
@@ -4305,7 +4303,7 @@ function TopCustomers({ sales, config, cur, wide }) {
                 </div>
               </div>
               <div className="flex items-center gap-3 shrink-0">
-                <span className="px-2.5 py-1 rounded-full text-[11px] font-black" style={{ background: dk ? "rgba(245,179,1,.15)" : "#fdf3e7", color: dk ? GOLD : GOLD_D }}>{lvl.name}</span>
+                <span className="px-2.5 py-1 rounded-full text-[11px] font-black" style={{ background: dk ? "rgba(234,179,8,.15)" : "#fdf3e7", color: dk ? GOLD : GOLD_D }}>{lvl.name}</span>
                 <span className="font-black tabular-nums" style={{ color: dk ? GOLD : INK }}>{fmt(c.total)} {cur}</span>
               </div>
             </div>
@@ -4326,7 +4324,7 @@ function MaterialImageEditor({ dk, url, onSave }) {
   const [savedFlash, setSavedFlash] = useState(false);
   const dirty = value.trim() !== (url || "").trim();
   const inp = "rounded-lg border px-2 py-2 text-sm " + (dk ? "" : "border-stone-300 bg-white");
-  const inpStyle = dk ? { borderColor: "#3a3a3a", background: PANEL, color: "white" } : {};
+  const inpStyle = dk ? { borderColor: "rgba(255,255,255,.14)", background: PANEL, color: "white" } : {};
   const lab = dk ? { color: "#9ca3af" } : { color: "#78716c" };
 
   const save = async () => {
@@ -4395,9 +4393,9 @@ function PriceSettings({ config, save, close, wide, visibility, onTogglePublic, 
 
   const dk = wide;
   const inp = "rounded-lg border px-2 py-2 text-sm " + (dk ? "" : "border-stone-300 bg-white");
-  const inpStyle = dk ? { borderColor: "#3a3a3a", background: PANEL, color: "white" } : {};
+  const inpStyle = dk ? { borderColor: "rgba(255,255,255,.14)", background: PANEL, color: "white" } : {};
   const lab = dk ? { color: "#9ca3af" } : { color: "#78716c" };
-  const cardBg = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
+  const cardBg = dk ? { background: PANEL, borderColor: "rgba(255,255,255,.08)" } : { background: "white", borderColor: "#e7e5e4" };
 
   const [confirmReset, setConfirmReset] = useState(false);
   const restoreDefaults = () => {
@@ -4412,7 +4410,7 @@ function PriceSettings({ config, save, close, wide, visibility, onTogglePublic, 
         className="w-full py-2.5 rounded-lg font-black text-sm border-2 border-dashed"
         style={confirmReset
           ? { background: GOLD, color: INK, borderColor: GOLD }
-          : (dk ? { borderColor: "#3a3a3a", color: GOLD } : { borderColor: "#d6d3d1", color: "#78716c" })}>
+          : (dk ? { borderColor: "rgba(255,255,255,.14)", color: GOLD } : { borderColor: "#d6d3d1", color: "#78716c" })}>
         {confirmReset ? "Tryk igen for at indlæse alle 30 standardvarer (erstatter listen nedenfor)" : "↻ Gendan standardvarer (30 items med priser & kategorier)"}
       </button>
       <div>
@@ -4457,7 +4455,7 @@ function PriceSettings({ config, save, close, wide, visibility, onTogglePublic, 
         <div className="flex flex-wrap gap-2 mb-2">
           {catList.map((c) => (
             <span key={c} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-bold border"
-              style={dk ? { borderColor: "#3a3a3a", color: "white", background: PANEL } : { borderColor: "#d6d3d1", color: INK, background: "white" }}>
+              style={dk ? { borderColor: "rgba(255,255,255,.14)", color: "white", background: PANEL } : { borderColor: "#d6d3d1", color: INK, background: "white" }}>
               {c}
               <button onClick={() => delCat(c)} style={{ color: dk ? "#888" : "#a8a29e" }}><X size={14} /></button>
             </span>
@@ -4494,7 +4492,7 @@ function PriceSettings({ config, save, close, wide, visibility, onTogglePublic, 
                 <label className="flex items-center gap-1.5 flex-1">
                   <span className="text-[11px] shrink-0" style={lab}>Salg</span>
                   <input type="number" inputMode="numeric" value={m.sell ?? m.price} onChange={(e) => upd(m.id, "sell", e.target.value)}
-                    className={inp + " w-full font-bold"} style={{ ...inpStyle, color: dk ? "#4ade80" : GREEN }} />
+                    className={inp + " w-full font-bold"} style={{ ...inpStyle, color: dk ? "#34d399" : GREEN }} />
                 </label>
                 <div className="flex flex-col shrink-0">
                   <button onClick={() => move(i, -1)} disabled={i === 0}
@@ -4515,7 +4513,7 @@ function PriceSettings({ config, save, close, wide, visibility, onTogglePublic, 
                   {catList.map((c) => <option key={c} value={c}>{c}</option>)}
                 </select>
               </label>
-              <label className="flex items-center gap-2 pt-1.5" style={{ borderTop: `1px solid ${dk ? "#333" : "#f0efed"}` }}>
+              <label className="flex items-center gap-2 pt-1.5" style={{ borderTop: `1px solid ${dk ? "rgba(255,255,255,.08)" : "#f0efed"}` }}>
                 <input type="checkbox" checked={!!visibility?.[m.id]}
                   onChange={(e) => onTogglePublic(m.id, e.target.checked)}
                   className="w-4 h-4 rounded shrink-0" />
