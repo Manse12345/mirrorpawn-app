@@ -864,6 +864,9 @@ export default function App() {
 
   const canManageStore = !!profile && (profile.role === "ejer" || profile.role === "manager");
   const isOwner = !!profile && profile.role === "ejer";
+  // Leaderboard-fanen: ejer/manager kan redigere (canManageStore), ansat må kun SE den
+  // (skrivebeskyttet — se LeaderboardAdmin's canManage-prop og RLS-policyen "manager write leaderboard").
+  const canViewLeaderboard = !!profile && (profile.role === "ejer" || profile.role === "manager" || profile.role === "ansat");
   const toggleSettings = () => {
     if (showSettings) { setShowSettings(false); editingRef.current = false; return; }
     if (!canManageStore) return;
@@ -1389,7 +1392,7 @@ export default function App() {
               <Users size={16} /> Ansatte
             </button>
           )}
-          {canManageStore && (
+          {canViewLeaderboard && (
             <button onClick={() => { setView(view === "leaderboard" ? "beregner" : "leaderboard"); setShowSettings(false); }}
               className="flex items-center gap-1.5 pl-3 pr-3.5 py-2 rounded-full font-black text-sm"
               style={view === "leaderboard" ? { background: GOLD, color: INK } : { background: "rgba(245,179,1,.15)", color: GOLD }}>
@@ -1452,8 +1455,8 @@ export default function App() {
           onCreateRecipe={handleCreateRecipe} onUpdateRecipe={handleUpdateRecipe} onDeleteRecipe={handleDeleteRecipe} />
       ) : view === "ansatte" && !showSettings && canManageStore ? (
         <StaffAdmin staffList={staffList} refresh={refreshStaff} myId={profile.id} wide={wide} canFullyManage={isOwner} />
-      ) : view === "leaderboard" && !showSettings && canManageStore ? (
-        <LeaderboardAdmin sales={sales} cur={cur} wide={wide} settings={lbSettings}
+      ) : view === "leaderboard" && !showSettings && canViewLeaderboard ? (
+        <LeaderboardAdmin sales={sales} cur={cur} wide={wide} settings={lbSettings} canManage={canManageStore}
           onSave={async (patch) => {
             setLbSettings((prev) => ({ ...(prev || {}), ...patch }));
             await saveLeaderboardSettings(patch);
@@ -2639,7 +2642,7 @@ const toLocalDatetimeInput = (iso) => {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 };
 
-function LeaderboardAdmin({ sales, cur, wide, settings, onSave }) {
+function LeaderboardAdmin({ sales, cur, wide, settings, onSave, canManage }) {
   const dk = wide;
   const box = dk ? { background: PANEL, borderColor: "#333" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
@@ -2684,58 +2687,87 @@ function LeaderboardAdmin({ sales, cur, wide, settings, onSave }) {
     setBusy(false);
   };
 
-  const ranking = buildLeaderboardRanking(
-    sales,
-    form.start_at ? new Date(form.start_at).getTime() : null,
-    form.end_at ? new Date(form.end_at).getTime() : null
-  );
+  // Ansatte må ikke redigere, så de har ingen "form" i gang — ranglisten for dem
+  // regnes altid direkte ud fra de gemte indstillinger (settings), ikke fra formularen.
+  const ranking = canManage
+    ? buildLeaderboardRanking(
+        sales,
+        form.start_at ? new Date(form.start_at).getTime() : null,
+        form.end_at ? new Date(form.end_at).getTime() : null
+      )
+    : buildLeaderboardRanking(
+        sales,
+        settings?.start_at ? new Date(settings.start_at).getTime() : null,
+        settings?.end_at ? new Date(settings.end_at).getTime() : null
+      );
   const publicUrl = typeof window !== "undefined" ? `${window.location.origin}/leaderboard` : "/leaderboard";
 
   return (
     <div className={wrap} style={wrapStyle}>
       <div className="text-xs font-black uppercase tracking-wider mb-2" style={{ color: dk ? GOLD : BLUE }}>Leaderboard-konkurrence</div>
-      {err && <div className="text-xs font-semibold mb-2" style={{ color: RED }}>{err}</div>}
+      {canManage && err && <div className="text-xs font-semibold mb-2" style={{ color: RED }}>{err}</div>}
 
-      <div className="rounded-xl border p-4 space-y-3 mb-4" style={box}>
-        <div>
-          <label className="text-[10px] uppercase tracking-widest font-bold" style={{ color: sub }}>Konkurrence-navn</label>
-          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inp} style={inpStyle} />
-        </div>
-        <div>
-          <label className="text-[10px] uppercase tracking-widest font-bold" style={{ color: sub }}>Præmiepulje ({cur})</label>
-          <input type="number" min="0" step="1" inputMode="numeric" value={form.prize_pool}
-            onChange={(e) => setForm({ ...form, prize_pool: e.target.value })}
-            placeholder="fx 1000000" className={inp} style={inpStyle} />
-          <div className="text-[11px] mt-1" style={{ color: sub }}>Vises stort på den offentlige side — vinderen (nr. 1) tager det hele.</div>
-        </div>
-        <div className="flex gap-2">
-          <div className="flex-1 min-w-0">
-            <label className="text-[10px] uppercase tracking-widest font-bold" style={{ color: sub }}>Start</label>
-            <input type="datetime-local" value={form.start_at} onChange={(e) => setForm({ ...form, start_at: e.target.value })} className={inp} style={inpStyle} />
+      {canManage ? (
+        <div className="rounded-xl border p-4 space-y-3 mb-4" style={box}>
+          <div>
+            <label className="text-[10px] uppercase tracking-widest font-bold" style={{ color: sub }}>Konkurrence-navn</label>
+            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inp} style={inpStyle} />
           </div>
-          <div className="flex-1 min-w-0">
-            <label className="text-[10px] uppercase tracking-widest font-bold" style={{ color: sub }}>Slut</label>
-            <input type="datetime-local" value={form.end_at} onChange={(e) => setForm({ ...form, end_at: e.target.value })} className={inp} style={inpStyle} />
+          <div>
+            <label className="text-[10px] uppercase tracking-widest font-bold" style={{ color: sub }}>Præmiepulje ({cur})</label>
+            <input type="number" min="0" step="1" inputMode="numeric" value={form.prize_pool}
+              onChange={(e) => setForm({ ...form, prize_pool: e.target.value })}
+              placeholder="fx 1000000" className={inp} style={inpStyle} />
+            <div className="text-[11px] mt-1" style={{ color: sub }}>Vises stort på den offentlige side — vinderen (nr. 1) tager det hele.</div>
+          </div>
+          <div className="flex gap-2">
+            <div className="flex-1 min-w-0">
+              <label className="text-[10px] uppercase tracking-widest font-bold" style={{ color: sub }}>Start</label>
+              <input type="datetime-local" value={form.start_at} onChange={(e) => setForm({ ...form, start_at: e.target.value })} className={inp} style={inpStyle} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <label className="text-[10px] uppercase tracking-widest font-bold" style={{ color: sub }}>Slut</label>
+              <input type="datetime-local" value={form.end_at} onChange={(e) => setForm({ ...form, end_at: e.target.value })} className={inp} style={inpStyle} />
+            </div>
+          </div>
+          <button onClick={() => setForm({ ...form, active: !form.active })}
+            className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg font-bold text-sm text-left"
+            style={form.active ? { background: GREEN, color: "white" } : { background: dk ? "#2a2a2a" : "#f5f5f4", color: sub }}>
+            <span>Konkurrence er {form.active ? "AKTIV — synlig på den offentlige side" : "inaktiv — skjult for offentligheden"}</span>
+            <span className="inline-flex items-center shrink-0 w-9 h-5 rounded-full relative ml-2" style={{ background: form.active ? "rgba(255,255,255,.35)" : (dk ? "#444" : "#d6d3d1") }}>
+              <span className="absolute w-4 h-4 top-0.5 rounded-full bg-white" style={{ left: form.active ? 18 : 2 }} />
+            </span>
+          </button>
+          <button disabled={busy} onClick={save} className="w-full py-2.5 rounded-lg font-black text-sm" style={{ background: GOLD, color: INK }}>
+            <Save size={15} className="inline mr-1" /> {savedFlash ? "Gemt!" : "Gem indstillinger"}
+          </button>
+          <div className="text-[11px] break-all" style={{ color: sub }}>
+            Offentligt link (ingen login nødvendig): <span className="font-mono" style={{ color: dk ? GOLD : BLUE }}>{publicUrl}</span>
           </div>
         </div>
-        <button onClick={() => setForm({ ...form, active: !form.active })}
-          className="w-full flex items-center justify-between px-3 py-2.5 rounded-lg font-bold text-sm text-left"
-          style={form.active ? { background: GREEN, color: "white" } : { background: dk ? "#2a2a2a" : "#f5f5f4", color: sub }}>
-          <span>Konkurrence er {form.active ? "AKTIV — synlig på den offentlige side" : "inaktiv — skjult for offentligheden"}</span>
-          <span className="inline-flex items-center shrink-0 w-9 h-5 rounded-full relative ml-2" style={{ background: form.active ? "rgba(255,255,255,.35)" : (dk ? "#444" : "#d6d3d1") }}>
-            <span className="absolute w-4 h-4 top-0.5 rounded-full bg-white" style={{ left: form.active ? 18 : 2 }} />
-          </span>
-        </button>
-        <button disabled={busy} onClick={save} className="w-full py-2.5 rounded-lg font-black text-sm" style={{ background: GOLD, color: INK }}>
-          <Save size={15} className="inline mr-1" /> {savedFlash ? "Gemt!" : "Gem indstillinger"}
-        </button>
-        <div className="text-[11px] break-all" style={{ color: sub }}>
-          Offentligt link (ingen login nødvendig): <span className="font-mono" style={{ color: dk ? GOLD : BLUE }}>{publicUrl}</span>
+      ) : (
+        // Ansat: skrivebeskyttet oversigt — samme oplysninger, ingen felter eller knapper at ændre noget med.
+        <div className="rounded-xl border p-4 space-y-2 mb-4" style={box}>
+          <div className="flex items-center justify-between">
+            <span className="font-bold" style={{ color: dk ? "white" : INK }}>{settings?.name || "Konkurrence"}</span>
+            <span className="px-2.5 py-1 rounded-full text-[11px] font-bold"
+              style={settings?.active ? { background: GREEN, color: "white" } : { background: dk ? "#2a2a2a" : "#f5f5f4", color: sub }}>
+              {settings?.active ? "AKTIV" : "Inaktiv"}
+            </span>
+          </div>
+          <div className="text-sm" style={{ color: sub }}>
+            Præmiepulje: <span className="font-black" style={{ color: dk ? GOLD : BLUE }}>{fmt(settings?.prize_pool || 0)} {cur}</span>
+          </div>
+          {(settings?.start_at || settings?.end_at) && (
+            <div className="text-[11px]" style={{ color: sub }}>
+              Periode: {settings?.start_at ? new Date(settings.start_at).toLocaleString() : "—"} til {settings?.end_at ? new Date(settings.end_at).toLocaleString() : "—"}
+            </div>
+          )}
         </div>
-      </div>
+      )}
 
       <div className="text-xs font-black uppercase tracking-wider mb-2" style={{ color: dk ? GOLD : BLUE }}>
-        Forhåndsvisning af rangliste ({ranking.length})
+        {canManage ? `Forhåndsvisning af rangliste (${ranking.length})` : `Rangliste (${ranking.length})`}
       </div>
       <div className="space-y-1.5">
         {ranking.length === 0 && (
