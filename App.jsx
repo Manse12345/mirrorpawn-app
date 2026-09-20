@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, Lock, Package, ArrowLeftRight, Home, Camera, Hammer, Trophy, TrendingUp, Star, Pencil, Download, Wallet } from "lucide-react";
+import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, ChevronDown, Lock, Package, ArrowLeftRight, Home, Camera, Hammer, Trophy, TrendingUp, Star, Pencil, Download, Wallet } from "lucide-react";
 import {
   loadConfig, saveConfig as sbSaveConfig, loadSales as sbLoadSales, insertSale, logEvent,
   signIn, signOut, getSession, onAuthChange, loadMyProfile, loadAllProfiles,
@@ -84,6 +84,10 @@ const fmt = (n) => (Math.round(n) || 0).toLocaleString("da-DK");
 const DK_TZ = "Europe/Copenhagen";
 const fmtTimeDK = (ms) => new Date(ms).toLocaleTimeString("en-GB", { timeZone: DK_TZ, hour: "2-digit", minute: "2-digit", hour12: false });
 const fmtDateDK = (ms) => new Date(ms).toLocaleDateString("da-DK", { timeZone: DK_TZ });
+// Stabilt "YYYY-MM-DD"-nøgle i dansk tid — bruges KUN til at gruppere/sortere vagter pr.
+// dag (fmtDateDK ovenfor er til visning og kan ikke bruges som nøgle, da formatet
+// afhænger af locale). Samme dag i København, uanset browserens egen tidszone.
+const dayKeyDK = (ms) => new Date(ms).toLocaleDateString("en-CA", { timeZone: DK_TZ });
 const PAGE_MAX = 1100; // max-bredde for indholdssider på brede skærme (Kunder/Ansatte/Rediger)
 const BIG_TRADE_CONFIRM_THRESHOLD = 500000; // over dette beløb (kr.) skal kassøren bekræfte handlen, før den gemmes
 
@@ -3390,6 +3394,12 @@ function ShiftView({ profile, activeShifts, shiftLog, shiftLogLoading, staffList
   const sub = dk ? "#9ca3af" : "#78716c";
   const [period, setPeriod] = useState("dag"); // dag | uge | måned | alt — samme som Dagbog
   const [editingId, setEditingId] = useState(null);
+  const [expandedDays, setExpandedDays] = useState(() => new Set());
+  const toggleDay = (key) => setExpandedDays((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
 
   const fmtHM = fmtTimeDK; // dansk tid (Europe/Copenhagen), ikke browserens/serverens egen tidszone
 
@@ -3411,6 +3421,28 @@ function ShiftView({ profile, activeShifts, shiftLog, shiftLogLoading, staffList
     const totalMin = Math.max(0, Math.round(ms / 60000));
     return `${Math.floor(totalMin / 60)}t ${totalMin % 60}m`;
   };
+
+  // "Vagter i perioden" grupperet pr. medarbejder PR. DAG (dansk tid) — ren
+  // omgruppering af "inPeriod" til visning, rører ikke selve vagt-dataen. "shiftLog"
+  // er allerede sorteret nyeste-først (loadShiftLog), så rækkefølgen af grupperne
+  // (efter det FØRSTE — dvs. seneste — møde med hver medarbejder+dag) forbliver
+  // nyeste dag øverst, uden en ekstra sortering her.
+  const dayGroups = [];
+  const dayGroupIndex = {};
+  inPeriod.forEach((s) => {
+    const dayKey = dayKeyDK(s.clockIn);
+    const key = s.userId + "|" + dayKey;
+    if (!dayGroupIndex[key]) {
+      const g = { key, userId: s.userId, name: s.name, dayLabel: fmtDateDK(s.clockIn), shifts: [] };
+      dayGroupIndex[key] = g;
+      dayGroups.push(g);
+    }
+    dayGroupIndex[key].shifts.push(s);
+  });
+  dayGroups.forEach((g) => {
+    g.shifts.sort((a, b) => a.clockIn - b.clockIn);
+    g.ms = g.shifts.reduce((a, s) => a + (s.clockOut || now) - s.clockIn, 0);
+  });
 
   return (
     <div className={"pb-10 " + (dk ? "px-8 pt-6 mx-auto text-white" : "px-3 pt-3")} style={dk ? { maxWidth: 900 } : {}}>
@@ -3464,15 +3496,16 @@ function ShiftView({ profile, activeShifts, shiftLog, shiftLogLoading, staffList
           )}
 
           <div className="text-xs font-black uppercase tracking-wider mb-2" style={{ color: dk ? GOLD : BLUE }}>Vagter i perioden</div>
-          {!shiftLogLoading && inPeriod.length === 0 && (
+          {!shiftLogLoading && dayGroups.length === 0 && (
             <div className="text-sm py-6 text-center" style={{ color: sub }}>Ingen vagter i denne periode.</div>
           )}
           <div className="space-y-2">
-            {inPeriod.map((s) => (
-              <ShiftLogRow key={s.id} shift={s} dk={dk} box={box} sub={sub} isOwner={isOwner}
-                editing={editingId === s.id} onStartEdit={() => setEditingId(s.id)} onCancelEdit={() => setEditingId(null)}
+            {dayGroups.map((g) => (
+              <ShiftDayGroup key={g.key} group={g} dk={dk} box={box} sub={sub} isOwner={isOwner}
+                expanded={expandedDays.has(g.key)} onToggle={() => toggleDay(g.key)}
+                editingId={editingId} onStartEdit={setEditingId} onCancelEdit={() => setEditingId(null)}
                 onCloseShift={onCloseShift}
-                onSaveEdit={async (ci, co) => { await onEditShift(s.id, ci, co); setEditingId(null); }} />
+                onSaveEdit={async (shiftId, ci, co) => { await onEditShift(shiftId, ci, co); setEditingId(null); }} />
             ))}
           </div>
 
@@ -3484,6 +3517,40 @@ function ShiftView({ profile, activeShifts, shiftLog, shiftLogLoading, staffList
             <ShiftExport staffList={staffList} shiftLog={shiftLog} shiftLogLoading={shiftLogLoading} dk={dk} box={box} sub={sub} />
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+// Én linje pr. medarbejder PR. DAG — foldet sammen som standard (antal vagter den
+// dag + samlet tid). Klik for at folde ud og se de enkelte vagter (ShiftLogRow
+// herunder, uændret — "Ret"/"Luk vagt" virker præcis som før, bare inde i den
+// udfoldede dag). Ren omgruppering af visningen, ingen egen data/skrivning.
+function ShiftDayGroup({ group, dk, box, sub, isOwner, expanded, onToggle, editingId, onStartEdit, onCancelEdit, onSaveEdit, onCloseShift }) {
+  const fmtDur = (ms) => {
+    const totalMin = Math.max(0, Math.round(ms / 60000));
+    return `${Math.floor(totalMin / 60)}t ${totalMin % 60}m`;
+  };
+  return (
+    <div className="rounded-xl border overflow-hidden" style={box}>
+      <button onClick={onToggle} className="w-full flex items-center justify-between p-3 text-left">
+        <div>
+          <div className="font-bold" style={{ color: dk ? "white" : INK }}>{group.name}</div>
+          <div className="text-xs" style={{ color: sub }}>
+            {group.dayLabel} · {group.shifts.length} vagt{group.shifts.length === 1 ? "" : "er"} · {fmtDur(group.ms)}
+          </div>
+        </div>
+        <ChevronDown size={16} style={{ color: sub, transform: expanded ? "rotate(180deg)" : "none", transition: "transform .15s", flexShrink: 0 }} />
+      </button>
+      {expanded && (
+        <div className="p-3 pt-0 space-y-2">
+          {group.shifts.map((s) => (
+            <ShiftLogRow key={s.id} shift={s} dk={dk} box={dk ? { background: "#141414", borderColor: "#2a2a2a" } : { background: "#fafaf9", borderColor: "#e7e5e4" }} sub={sub} isOwner={isOwner}
+              editing={editingId === s.id} onStartEdit={() => onStartEdit(s.id)} onCancelEdit={onCancelEdit}
+              onCloseShift={onCloseShift}
+              onSaveEdit={(ci, co) => onSaveEdit(s.id, ci, co)} />
+          ))}
+        </div>
       )}
     </div>
   );
