@@ -13,10 +13,11 @@ import {
   loadLeaderboardSettings, saveLeaderboardSettings,
   loadCustomerPhones, saveCustomerPhone,
   loadRecipes, createRecipe, updateRecipe, deleteRecipe,
-  loadActiveShifts, loadShiftLog, clockIn as sbClockIn, clockOut as sbClockOut,
+  loadActiveShifts, loadShiftLog, loadShiftHours, clockIn as sbClockIn, clockOut as sbClockOut,
   closeShift as sbCloseShift, editShift as sbEditShift,
   loadActivityLog,
   loadBulletinPosts, createBulletinPost as sbCreateBulletinPost, deleteBulletinPost as sbDeleteBulletinPost,
+  uploadAvatar as sbUploadAvatar, loadAvatarUrls,
 } from "./supabase-store.js";
 
 /* ── Pawnshop-beregner ────────────────────────────────────────────
@@ -992,6 +993,10 @@ export default function App() {
   // Leaderboard-fanen: ejer/manager kan redigere (canManageStore), ansat må kun SE den
   // (skrivebeskyttet — se LeaderboardAdmin's canManage-prop og RLS-policyen "manager write leaderboard").
   const canViewLeaderboard = !!profile && (profile.role === "ejer" || profile.role === "manager" || profile.role === "ansat");
+  // Medarbejder-oversigten: ejer/manager kan redigere/eksportere (canManageStore),
+  // ansat må kun SE den, fuldt ud (alle medarbejderes tal) — se StaffOverview's
+  // canManage-prop og RLS/RPC'en get_shift_hours i 21-medarbejdere-fane.sql.
+  const canViewStaffOverview = !!profile && (profile.role === "ejer" || profile.role === "manager" || profile.role === "ansat");
   const toggleSettings = () => {
     if (showSettings) { setShowSettings(false); editingRef.current = false; return; }
     if (!canManageStore) return;
@@ -1171,7 +1176,10 @@ export default function App() {
   // Vagtlog/rapporten hentes først, når ejer/manager rent faktisk åbner Vagt-fanen
   // eller Medarbejder-oversigten (som også bruger den, til at koble timer med
   // handler) — ikke i baggrunds-pollet ovenfor, som kører for alle roller.
-  useEffect(() => { if ((view === "vagt" || view === "medarbejdere") && canManageStore) refreshShiftLog(); }, [view, canManageStore]);
+  // Kun Vagt-fanen bruger den FULDE, detaljerede vagtlog (kun ejer/manager, se
+  // "manager read all shifts"). "Medarbejdere"-fanen henter i stedet sine egne,
+  // summerede timer via loadShiftHours() (se StaffOverview) — påvirker ikke denne.
+  useEffect(() => { if (view === "vagt" && canManageStore) refreshShiftLog(); }, [view, canManageStore]);
   // Aktivitets-log hentes først, når ejeren rent faktisk åbner Aktivitet-fanen — kun
   // ejer (isOwner), ikke manager, se RLS-policyen "owner read activity_log".
   useEffect(() => { if (view === "aktivitet" && isOwner) refreshActivityLog(); }, [view, isOwner]);
@@ -1533,7 +1541,7 @@ export default function App() {
                 <Users size={16} /> Ansatte
               </button>
             )}
-            {canManageStore && (
+            {canViewStaffOverview && (
               <button onClick={() => { setView(view === "medarbejdere" ? "beregner" : "medarbejdere"); setShowSettings(false); }}
                 className={sideItemClass} style={sideItemStyle(view === "medarbejdere")}>
                 <Wallet size={16} /> Medarbejdere
@@ -1671,8 +1679,9 @@ export default function App() {
           onCreateRecipe={handleCreateRecipe} onUpdateRecipe={handleUpdateRecipe} onDeleteRecipe={handleDeleteRecipe} />
       ) : view === "ansatte" && !showSettings && canManageStore ? (
         <StaffAdmin staffList={staffList} refresh={refreshStaff} myId={profile.id} wide={wide} canFullyManage={isOwner} />
-      ) : view === "medarbejdere" && !showSettings && canManageStore ? (
-        <StaffOverview sales={sales} shiftLog={shiftLog} shiftLogLoading={shiftLogLoading} staffList={staffList} cur={cur} wide={wide} />
+      ) : view === "medarbejdere" && !showSettings && canViewStaffOverview ? (
+        <StaffOverview sales={sales} staffList={staffList} cur={cur} wide={wide}
+          myId={profile.id} canManage={canManageStore} />
       ) : view === "leaderboard" && !showSettings && canViewLeaderboard ? (
         <LeaderboardAdmin sales={sales} cur={cur} wide={wide} settings={lbSettings} canManage={canManageStore}
           onSave={async (patch) => {
@@ -3951,14 +3960,53 @@ function ShiftExport({ staffList, shiftLog, shiftLogLoading, dk, box, sub }) {
   );
 }
 
-/* ── Medarbejder-oversigt (kun ejer/manager — se canManageStore-tjekket i App, som er
-   den ENESTE, der renderer denne komponent) ──
-   Sammenholder vagttimer med handler PR. MEDARBEJDER, til brug for løn/bonus. Ren
-   visning + CSV-eksport, samme mønster som ShiftExport ovenfor — INGEN skrivning
-   nogen steder, kan aldrig ændre en vagt, en handel, kassen eller lageret. Læser
-   udelukkende data der allerede er hentet i App: "sales" (RLS: "authenticated read
-   sales" — alle handler, uanset rolle) og "shiftLog" (RLS: "manager read all
-   shifts" — kun ejer/manager, se 14-shifts.sql). Ingen nye databasekald.
+// Ét medarbejder-profilbillede — rund avatar, ensartet størrelse. Viser billedet
+// (object-fit: cover, så det altid udfylder cirklen pænt beskåret) hvis der er ét,
+// ellers et diskret standard-ikon. Kun klikbar (åbner filvælgeren) hvis "canEdit" er
+// sand — ellers ren visning. Selve rettigheden håndhæves i databasen (storage-RLS,
+// se 21-medarbejdere-fane.sql), denne komponent styrer kun om KNAPPEN vises.
+function StaffAvatar({ name, url, size, canEdit, onUpload }) {
+  const fileRef = useRef(null);
+  const [busy, setBusy] = useState(false);
+  const onChange = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !file.type.startsWith("image/")) return;
+    if (file.size > 4 * 1024 * 1024) { window.alert("Billedet er for stort (maks 4 MB)."); return; }
+    setBusy(true);
+    try { await onUpload(file); } catch (err) { window.alert(err?.message || "Kunne ikke gemme billedet."); }
+    setBusy(false);
+  };
+  return (
+    <span onClick={() => canEdit && !busy && fileRef.current?.click()}
+      title={canEdit ? "Skift profilbillede" : name}
+      className="relative inline-flex items-center justify-center shrink-0 rounded-full overflow-hidden"
+      style={{ width: size, height: size, background: "rgba(255,255,255,.06)", border: "1px solid rgba(234,179,8,.3)", cursor: canEdit ? "pointer" : "default" }}>
+      {url
+        ? <img src={url} alt={name} className="w-full h-full" style={{ objectFit: "cover" }} />
+        : <User size={Math.round(size * 0.55)} style={{ color: "rgba(255,255,255,.4)" }} />}
+      {busy && (
+        <span className="absolute inset-0 flex items-center justify-center" style={{ background: "rgba(0,0,0,.55)" }}>
+          <span className="text-[9px] font-bold text-white">…</span>
+        </span>
+      )}
+      {canEdit && <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onChange} />}
+    </span>
+  );
+}
+
+/* ── Medarbejder-oversigt (ALLE roller kan se den — se canViewStaffOverview i App) ──
+   Sammenholder vagttimer med handler PR. MEDARBEJDER, til brug for løn/bonus, og
+   viser hver medarbejders profilbillede. Ren visning for "ansat" — INGEN skrivning
+   nogen steder, kan aldrig ændre en vagt, en handel, kassen eller lageret (bortset
+   fra sit eget profilbillede, se StaffAvatar). CSV-eksport er fortsat kun for
+   ejer/manager, via "canManage"-prop'en fra App.
+
+   "sales" er allerede fuldt læsbar for alle roller (RLS: "authenticated read
+   sales"). Vagttimer læses derimod IKKE fra den fulde vagtlog (den er fortsat kun
+   ejer/manager, se Vagt-fanen) — i stedet hentes summerede timer pr. medarbejder via
+   get_shift_hours(), en smal funktion der er bevidst åben for alle roller (se
+   21-medarbejdere-fane.sql), så ingen enkelte klokkeslæt lækkes, kun periode-totaler.
 
    "Handler i alt" tæller køb OG salg for medarbejderen — matchet via sellerId
    (= profile.id for den, der var logget ind, da handlen blev gemt, se
@@ -3968,7 +4016,7 @@ function ShiftExport({ staffList, shiftLog, shiftLogLoading, dk, box, sub }) {
    det faktiske, historiske overskud, ikke et estimat. "Timer på vagt" tæller kun
    AFSLUTTEDE vagter (clock_out sat) — en vagt, der stadig pågår, tæller ikke med
    endnu, som ønsket. */
-function StaffOverview({ sales, shiftLog, shiftLogLoading, staffList, cur, wide }) {
+function StaffOverview({ sales, staffList, cur, wide, myId, canManage }) {
   const dk = wide;
   const box = dk ? { background: PANEL, borderColor: "rgba(255,255,255,.08)" } : { background: "white", borderColor: "#e7e5e4" };
   const sub = dk ? "#9ca3af" : "#78716c";
@@ -3977,6 +4025,9 @@ function StaffOverview({ sales, shiftLog, shiftLogLoading, staffList, cur, wide 
   const [fromDate, setFromDate] = useState(monthAgoStr());
   const [toDate, setToDate] = useState(todayStr());
   const [sortBy, setSortBy] = useState("profit"); // profit | perHour
+  const [shiftHours, setShiftHours] = useState({}); // { [user_id]: hoursMs }
+  const [hoursLoading, setHoursLoading] = useState(false);
+  const [avatarUrls, setAvatarUrls] = useState({}); // { [user_id]: signedUrl }
 
   const inputStyle = { borderColor: dk ? "rgba(255,255,255,.14)" : "#d6d3d1", background: dk ? "#0d0f12" : "white", color: dk ? "white" : INK };
   // "t:mm" (timer:minutter) — samme format som ShiftExport, for genkendelighed.
@@ -3990,9 +4041,31 @@ function StaffOverview({ sales, shiftLog, shiftLogLoading, staffList, cur, wide 
   const fromMs = fromDate ? new Date(fromDate + "T00:00:00").getTime() : -Infinity;
   const toMs = toDate ? new Date(toDate + "T23:59:59.999").getTime() : Infinity;
 
+  // Summerede vagttimer pr. medarbejder for den valgte periode — hentet server-side
+  // (get_shift_hours, åben for alle roller), genindlæst hver gang perioden ændres.
+  useEffect(() => {
+    let cancelled = false;
+    setHoursLoading(true);
+    loadShiftHours(new Date(fromMs).toISOString(), new Date(toMs).toISOString())
+      .then((map) => { if (!cancelled) setShiftHours(map); })
+      .catch(() => { if (!cancelled) setShiftHours({}); })
+      .finally(() => { if (!cancelled) setHoursLoading(false); });
+    return () => { cancelled = true; };
+  }, [fromMs, toMs]);
+
+  // Profilbilleder for hele medarbejderlisten, hentet i ét samlet kald.
+  const staffIds = staffList.map((p) => p.id).join(",");
+  const refreshAvatars = async () => {
+    try { setAvatarUrls(await loadAvatarUrls(staffList.map((p) => p.id))); } catch (e) {}
+  };
+  useEffect(() => { refreshAvatars(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [staffIds]);
+  const handleAvatarUpload = async (userId, file) => {
+    await sbUploadAvatar(userId, file);
+    await refreshAvatars();
+  };
+
   const rows = staffList.map((p) => {
-    const shifts = shiftLog.filter((s) => s.userId === p.id && s.clockOut != null && s.clockIn >= fromMs && s.clockIn <= toMs);
-    const hoursMs = shifts.reduce((a, s) => a + (s.clockOut - s.clockIn), 0);
+    const hoursMs = shiftHours[p.id] || 0;
     const hoursDecimal = hoursMs / 3600000;
 
     const trades = sales.filter((t) => t.sellerId === p.id && t.at >= fromMs && t.at <= toMs);
@@ -4041,7 +4114,8 @@ function StaffOverview({ sales, shiftLog, shiftLogLoading, staffList, cur, wide 
     <div className={"pb-10 " + (dk ? "px-8 pt-6 mx-auto text-white" : "px-3 pt-3")} style={dk ? { maxWidth: PAGE_MAX } : {}}>
       <div className="text-xs font-black uppercase tracking-wider mb-1" style={{ color: dk ? GOLD : BLUE }}>Medarbejder-oversigt</div>
       <div className="text-[11px] mb-3" style={{ color: sub }}>
-        Timer på vagt holdt op mod handler og avance, pr. medarbejder — til løn og bonus. Kun læsning; ændrer intet.
+        Timer på vagt holdt op mod handler og avance, pr. medarbejder — synligt for alle. Kun læsning; ændrer intet
+        {!canManage ? "." : " (eksport nedenfor er kun for ejer/manager)."}
       </div>
 
       <div className="flex flex-wrap items-end gap-3 mb-4">
@@ -4061,14 +4135,16 @@ function StaffOverview({ sales, shiftLog, shiftLogLoading, staffList, cur, wide 
               style={sortBy === v ? { background: GOLD, color: INK } : { background: dk ? PANEL : "white", color: sub }}>{l}</button>
           ))}
         </div>
-        <button onClick={exportCsv} disabled={rows.length === 0}
-          className="flex items-center gap-1.5 px-4 py-2 rounded-full font-black text-sm disabled:opacity-50 ml-auto"
-          style={{ background: GOLD, color: INK }}>
-          <Download size={15} /> Eksportér (CSV)
-        </button>
+        {canManage && (
+          <button onClick={exportCsv} disabled={rows.length === 0}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-full font-black text-sm disabled:opacity-50 ml-auto"
+            style={{ background: GOLD, color: INK }}>
+            <Download size={15} /> Eksportér (CSV)
+          </button>
+        )}
       </div>
 
-      {shiftLogLoading ? (
+      {hoursLoading ? (
         <div className="text-sm py-6 text-center" style={{ color: sub }}>Henter…</div>
       ) : rows.length === 0 ? (
         <div className="text-sm py-6 text-center" style={{ color: sub }}>Ingen medarbejdere fundet.</div>
@@ -4076,9 +4152,14 @@ function StaffOverview({ sales, shiftLog, shiftLogLoading, staffList, cur, wide 
         <div className="space-y-2 mb-4">
           {rows.map((r) => (
             <div key={r.id} className="rounded-xl border p-4" style={box}>
-              <div className="flex items-center justify-between mb-2">
-                <span className="font-bold" style={{ color: dk ? "white" : INK }}>{r.name}</span>
-                <span className="font-black tabular-nums" style={{ color: r.profit >= 0 ? (dk ? "#34d399" : GREEN) : (dk ? "#f43f5e" : RED) }}>
+              <div className="flex items-center justify-between mb-2 gap-2">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <StaffAvatar name={r.name} url={avatarUrls[r.id]} size={36}
+                    canEdit={r.id === myId || canManage}
+                    onUpload={(file) => handleAvatarUpload(r.id, file)} />
+                  <span className="font-bold truncate" style={{ color: dk ? "white" : INK }}>{r.name}</span>
+                </div>
+                <span className="font-black tabular-nums shrink-0" style={{ color: r.profit >= 0 ? (dk ? "#34d399" : GREEN) : (dk ? "#f43f5e" : RED) }}>
                   {fmt(r.profit)} {cur}
                 </span>
               </div>

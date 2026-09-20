@@ -458,6 +458,19 @@ export async function loadShiftLog() {
   if (error) throw error;
   return (data || []).map(mapShiftRow);
 }
+// Summerede vagttimer PR. MEDARBEJDER i en periode (ingen enkelte klokkeslæt) — via
+// get_shift_hours() (security definer, se 21-medarbejdere-fane.sql). Bevidst åben for
+// ALLE roller (ansat/manager/ejer), i modsætning til loadShiftLog() ovenfor — bruges af
+// "Medarbejder-oversigt", som skal vise timer for alle, uden at røre Vagt-fanens
+// adgang til den fulde, detaljerede vagtlog (den forbliver kun ejer/manager).
+// Returnerer { [user_id]: hoursMs }.
+export async function loadShiftHours(fromIso, toIso) {
+  const { data, error } = await supabase.rpc("get_shift_hours", { p_from: fromIso, p_to: toIso });
+  if (error) throw error;
+  const map = {};
+  (data || []).forEach((r) => { map[r.user_id] = +r.total_seconds * 1000; });
+  return map;
+}
 // Stempler DEN INDLOGGEDE bruger ind. Databasen forhindrer dobbelt-vagt
 // atomisk (unikt index på "kun én åben vagt pr. bruger") — se clock_in() i
 // 14-shifts.sql.
@@ -484,6 +497,30 @@ export async function editShift(shiftId, clockInIso, clockOutIso) {
     p_shift_id: shiftId, p_clock_in: clockInIso, p_clock_out: clockOutIso || null,
   });
   if (error) throw error;
+}
+
+// ---- Profilbilleder (Supabase Storage) — se 21-medarbejdere-fane.sql ----
+// PRIVAT bucket "avatars" — hvert billede gemt under præcis brugerens eget ID som
+// filnavn (ingen filendelse; Storage styrer visningstypen via content-type-metadata,
+// ikke filnavnet). RLS på storage.objects håndhæver rettighederne i databasen (ikke
+// kun UI'en): læsning = alle indloggede; skrivning = kun ens eget billede, eller
+// ejer/manager for alles.
+export async function uploadAvatar(userId, file) {
+  const { error } = await supabase.storage.from("avatars")
+    .upload(userId, file, { upsert: true, contentType: file.type || "image/jpeg" });
+  if (error) throw error;
+}
+// Henter midlertidige ("signed") visnings-URL'er for en liste af bruger-ID'er i ét
+// kald — kræver ikke at billedet findes for alle; mangler et billede, udelades den
+// bruger blot fra resultatet (UI'en viser så et standard-ikon i stedet). Bucket'en er
+// privat, så et rent gæt på URL'en (uden login) giver ingen adgang.
+export async function loadAvatarUrls(userIds) {
+  if (!userIds || userIds.length === 0) return {};
+  const { data, error } = await supabase.storage.from("avatars").createSignedUrls(userIds, 3600);
+  if (error) throw error;
+  const map = {};
+  (data || []).forEach((d) => { if (!d.error && d.signedUrl) map[d.path] = d.signedUrl; });
+  return map;
 }
 
 export const supabaseReady = true;
