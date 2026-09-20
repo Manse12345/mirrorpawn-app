@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, ChevronDown, Lock, Package, ArrowLeftRight, Home, Camera, Hammer, Trophy, TrendingUp, TrendingDown, Star, Pencil, Download, Wallet, Activity, Megaphone } from "lucide-react";
+import { Plus, Minus, X, Trash2, RotateCcw, Settings, Check, Search, Receipt, BarChart3, Save, Clock, User, Users, LogOut, Award, ChevronLeft, ChevronDown, Lock, Package, ArrowLeftRight, Home, Camera, Hammer, Trophy, TrendingUp, TrendingDown, Star, Pencil, Download, Wallet, Activity, Megaphone, Menu } from "lucide-react";
 import {
   loadConfig, saveConfig as sbSaveConfig, loadSales as sbLoadSales, insertSale, logEvent,
   signIn, signOut, getSession, onAuthChange, loadMyProfile, loadAllProfiles,
@@ -847,6 +847,11 @@ export default function App() {
     return () => window.removeEventListener("resize", onR);
   }, []);
   const wide = mode === "pc" ? true : mode === "mobil" ? false : autoWide;
+  // Sidebar-navigation: kun UI-tilstand for om den mobile skuffe (drawer) er åben —
+  // ren layout-tilstand, rører intet ved view/rolle-logik. På desktop ("wide") er
+  // sidebaren altid synlig og denne bruges slet ikke.
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  useEffect(() => { setSidebarOpen(false); }, [view]);
   const [staffList, setStaffList] = useState([]);
   const refreshStaff = async () => { try { setStaffList(await loadAllProfiles()); } catch (e) {} };
   const [inventory, setInventory] = useState({}); // material_id -> qty
@@ -1434,14 +1439,143 @@ export default function App() {
     setReceipt(null); setPendingTrade(null); setPendingCraftChoices({});
   };
 
-  // Fane-styling til hoved-navigationen (rent visuelt — se redesign-noten): slank,
-  // flad tekst-tab i stedet for tunge udfyldte piller. Aktiv fane = guld tekst + en
-  // lille indikator-streg (border-bottom) og et svagt glow; inaktive faner er neutralt
-  // grå, ingen baggrund. Rører ikke onClick/view-logik noget sted — kun style/className.
-  const navTabClass = "flex items-center gap-1.5 px-2.5 py-1.5 text-sm font-bold border-b-2 whitespace-nowrap";
-  const navTabStyle = (active) => active
-    ? { color: GOLD, borderColor: GOLD, textShadow: "0 0 14px rgba(234,179,8,.35)" }
-    : { color: "rgba(255,255,255,.55)", borderColor: "transparent" };
+  // Fane-styling til sidebar-navigationen (rent visuelt): flad tekst-række i stedet for
+  // udfyldte piller. Aktiv fane = guld tekst, svag guld baggrundstint og en lille
+  // indikator-streg i venstre kant; inaktive faner er neutralt grå, ingen baggrund.
+  // Rører ikke onClick/view-logik noget sted — kun style/className.
+  const SIDEBAR_W = 236;
+  const sideItemClass = "flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-bold w-full text-left";
+  const sideItemStyle = (active) => active
+    ? { color: GOLD, background: "rgba(234,179,8,.10)", boxShadow: "inset 3px 0 0 0 " + GOLD }
+    : { color: "rgba(255,255,255,.55)" };
+  const sideGroupLabel = "px-2.5 pt-1 pb-1.5 text-[10px] font-bold uppercase tracking-widest";
+  const sideGroupLabelStyle = { color: "rgba(255,255,255,.35)" };
+
+  // Sidebar-indholdet — SAMME knapper/onClick/view-tjek/rolle-gates som før (kun flyttet
+  // fra en vandret top-bar til en lodret liste, grupperet med små overskrifter). Bruges
+  // BÅDE i den faste desktop-sidebar og i mobil-skuffen nedenfor (identisk indhold, kun
+  // beholderen udenom er forskellig), så der ikke er to steder at holde i sync.
+  const sidebarContent = (
+    <>
+      <button onClick={goHome} className="flex items-center gap-3 px-4 pt-5 pb-4 text-left w-full shrink-0" title="Til forsiden">
+        <span className="inline-flex items-center justify-center rounded-lg font-black shrink-0"
+          style={{ background: GOLD, color: INK, width: 40, height: 40, fontSize: 20 }}>◆</span>
+        <div className="min-w-0">
+          <div className="uppercase tracking-widest font-bold text-[10px]" style={{ color: GOLD }}>Buy · Sell · Trade</div>
+          <div className="font-black leading-tight text-white text-base truncate">{config.shopName}</div>
+        </div>
+      </button>
+
+      <div className="px-3 pb-3 space-y-2 shrink-0">
+        <div className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold" style={{ background: "rgba(234,179,8,.12)", color: GOLD }}>
+          <User size={14} className="shrink-0" /> <span className="truncate">{profile.name}</span> <span className="shrink-0" style={{ opacity: .6 }}>· {profile.role}</span>
+        </div>
+        <div className="flex rounded-lg overflow-hidden text-[11px] font-bold" style={{ border: "1px solid rgba(234,179,8,.35)" }}>
+          {[["auto", "Auto"], ["mobil", "Telefon"], ["pc", "PC"]].map(([v, l]) => (
+            <button key={v} onClick={() => setMode(v)} className="flex-1 py-1.5"
+              style={mode === v ? { background: GOLD, color: INK } : { color: GOLD }}>{l}</button>
+          ))}
+        </div>
+      </div>
+
+      <nav className="flex-1 overflow-y-auto px-2 pb-2 space-y-3">
+        <div>
+          <div className={sideGroupLabel} style={sideGroupLabelStyle}>Handel</div>
+          <div className="space-y-0.5">
+            <button onClick={goHome} className={sideItemClass} style={sideItemStyle(view === "beregner" && !showSettings)}>
+              <Home size={16} /> Hjem
+            </button>
+            <button onClick={() => { setView(view === "kunder" ? "beregner" : "kunder"); setShowSettings(false); setOpenCust(null); }}
+              className={sideItemClass} style={sideItemStyle(view === "kunder")}>
+              <User size={16} /> Kunder
+            </button>
+            <button onClick={() => { setView(view === "stamkunder" ? "beregner" : "stamkunder"); setShowSettings(false); }}
+              className={sideItemClass} style={sideItemStyle(view === "stamkunder")}>
+              <Star size={16} /> Stamkunder
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <div className={sideGroupLabel} style={sideGroupLabelStyle}>Varer</div>
+          <div className="space-y-0.5">
+            <button onClick={() => { setView(view === "lager" ? "beregner" : "lager"); setShowSettings(false); }}
+              className={sideItemClass} style={sideItemStyle(view === "lager")}>
+              <Package size={16} /> Lager
+            </button>
+            <button onClick={() => { setView(view === "crafting" ? "beregner" : "crafting"); setShowSettings(false); }}
+              className={sideItemClass} style={sideItemStyle(view === "crafting")}>
+              <Hammer size={16} /> Crafting
+            </button>
+            <button onClick={() => { setView(view === "topvarer" ? "beregner" : "topvarer"); setShowSettings(false); }}
+              className={sideItemClass} style={sideItemStyle(view === "topvarer")}>
+              <TrendingUp size={16} /> Top-varer
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <div className={sideGroupLabel} style={sideGroupLabelStyle}>Personale</div>
+          <div className="space-y-0.5">
+            {canManageStore && (
+              <button onClick={() => { setView(view === "ansatte" ? "beregner" : "ansatte"); setShowSettings(false); }}
+                className={sideItemClass} style={sideItemStyle(view === "ansatte")}>
+                <Users size={16} /> Ansatte
+              </button>
+            )}
+            {canManageStore && (
+              <button onClick={() => { setView(view === "medarbejdere" ? "beregner" : "medarbejdere"); setShowSettings(false); }}
+                className={sideItemClass} style={sideItemStyle(view === "medarbejdere")}>
+                <Wallet size={16} /> Medarbejdere
+              </button>
+            )}
+            <button onClick={() => { setView(view === "vagt" ? "beregner" : "vagt"); setShowSettings(false); }}
+              className={sideItemClass} style={sideItemStyle(view === "vagt")}>
+              <Clock size={16} /> Vagt
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <div className={sideGroupLabel} style={sideGroupLabelStyle}>Rapporter</div>
+          <div className="space-y-0.5">
+            <button onClick={() => { setView(view === "log" ? "beregner" : "log"); setShowSettings(false); }}
+              className={sideItemClass} style={sideItemStyle(view === "log")}>
+              <BarChart3 size={16} /> Dagbog
+            </button>
+            {canViewLeaderboard && (
+              <button onClick={() => { setView(view === "leaderboard" ? "beregner" : "leaderboard"); setShowSettings(false); }}
+                className={sideItemClass} style={sideItemStyle(view === "leaderboard")}>
+                <Trophy size={16} /> Leaderboard
+              </button>
+            )}
+            {isOwner && (
+              <button onClick={() => { setView(view === "aktivitet" ? "beregner" : "aktivitet"); setShowSettings(false); }}
+                className={sideItemClass} style={sideItemStyle(view === "aktivitet")}>
+                <Activity size={16} /> Aktivitet
+              </button>
+            )}
+          </div>
+        </div>
+      </nav>
+
+      <div className="px-2 py-3 space-y-1 shrink-0" style={{ borderTop: "1px solid rgba(255,255,255,.08)" }}>
+        {canManageStore && (
+          <button onClick={toggleSettings}
+            className="flex items-center gap-2.5 px-3 py-2 rounded-lg font-black text-sm w-full text-left"
+            style={{ background: GOLD, color: INK }}
+            aria-label="Rediger materialer og priser">
+            <Settings size={16} /> {showSettings ? "Luk" : "Rediger"}
+          </button>
+        )}
+        <button onClick={doLogout} title="Log ud"
+          className="flex items-center gap-2.5 px-3 py-2 rounded-lg font-bold text-sm w-full text-left"
+          style={{ background: "rgba(234,179,8,.10)", color: GOLD }}>
+          <LogOut size={16} /> Log ud
+        </button>
+      </div>
+    </>
+  );
 
   return (
     <div className={"min-h-screen font-sans w-full" + (wide ? " text-white" : " text-stone-900 pb-40 mx-auto")}
@@ -1467,102 +1601,40 @@ export default function App() {
           style={{ background: RED, color: "white", maxWidth: 420 }}>⚠ {rowActionErr}</button>
       )}
 
-      {/* Header */}
-      <div className={"flex items-center justify-between " + (wide ? "px-8 py-4" : "px-4 pt-3 pb-2.5 text-white")}
-        style={wide
-          ? { background: `linear-gradient(135deg, ${INK} 0%, #1a1d22 60%, ${INK} 100%)`, borderBottom: `2px solid rgba(234,179,8,.5)` }
-          : { background: INK, borderBottom: `2px solid rgba(234,179,8,.5)` }}>
-        <button onClick={goHome} className="flex items-center gap-3 text-left" title="Til forsiden">
-          <span className="inline-flex items-center justify-center rounded-lg font-black shrink-0"
-            style={{ background: GOLD, color: INK, width: wide ? 48 : 38, height: wide ? 48 : 38, fontSize: wide ? 24 : 19 }}>◆</span>
-          <div>
-            <div className="uppercase tracking-widest font-bold" style={{ color: GOLD, fontSize: wide ? 11 : 10 }}>Buy · Sell · Trade</div>
-            <div className={"font-black leading-none text-white " + (wide ? "text-2xl" : "text-lg")}>{config.shopName}</div>
-            {wide && <div className="text-[10px] mt-1 flex items-center gap-1" style={{ color: "rgba(255,255,255,.4)" }}><Clock size={10} /> Priser synkroniseres automatisk</div>}
+      {/* Sidebar-navigation — fast synlig i venstre side på desktop ("wide"); på mobil
+          erstattet af en slank top-bjælke med hamburger-knap, der åbner samme indhold
+          som en skydeskuffe. SAMME "view"/rolle-styring som før (se sidebarContent
+          ovenfor) — kun placeringen er ændret. */}
+      {wide ? (
+        <aside className="fixed inset-y-0 left-0 flex flex-col z-30" style={{ width: SIDEBAR_W,
+          background: `linear-gradient(180deg, ${INK} 0%, #1a1d22 100%)`, borderRight: "1px solid rgba(255,255,255,.08)" }}>
+          {sidebarContent}
+        </aside>
+      ) : (
+        <>
+          <div className="flex items-center gap-3 px-4 pt-3 pb-2.5 text-white" style={{ background: INK, borderBottom: "2px solid rgba(234,179,8,.5)" }}>
+            <button onClick={() => setSidebarOpen(true)} className="p-1.5 -ml-1.5 rounded-lg" style={{ color: GOLD }} aria-label="Åbn menu">
+              <Menu size={22} />
+            </button>
+            <span className="inline-flex items-center justify-center rounded-lg font-black shrink-0"
+              style={{ background: GOLD, color: INK, width: 34, height: 34, fontSize: 17 }}>◆</span>
+            <span className="font-black text-lg truncate">{config.shopName}</span>
           </div>
-        </button>
-        <div className="flex items-center gap-1">
-          <div className="hidden sm:flex items-center gap-1.5 pl-3 pr-3 py-1.5 rounded-full text-xs font-bold mr-1"
-            style={{ background: "rgba(234,179,8,.12)", color: GOLD }}>
-            <User size={14} /> {profile.name} <span style={{ opacity: .6 }}>· {profile.role}</span>
-          </div>
-          <div className="hidden sm:flex rounded-full overflow-hidden text-[11px] font-bold mr-1" style={{ border: "1px solid rgba(234,179,8,.35)" }}>
-            {[["auto", "Auto"], ["mobil", "Telefon"], ["pc", "PC"]].map(([v, l]) => (
-              <button key={v} onClick={() => setMode(v)} className="px-2.5 py-1.5"
-                style={mode === v ? { background: GOLD, color: INK } : { color: GOLD }}>{l}</button>
-            ))}
-          </div>
-          <button onClick={goHome} className={navTabClass} style={navTabStyle(view === "beregner" && !showSettings)}>
-            <Home size={16} /> <span className="hidden sm:inline">Hjem</span>
-          </button>
-          <button onClick={() => { setView(view === "kunder" ? "beregner" : "kunder"); setShowSettings(false); setOpenCust(null); }}
-            className={navTabClass} style={navTabStyle(view === "kunder")}>
-            <User size={16} /> Kunder
-          </button>
-          <button onClick={() => { setView(view === "lager" ? "beregner" : "lager"); setShowSettings(false); }}
-            className={navTabClass} style={navTabStyle(view === "lager")}>
-            <Package size={16} /> Lager
-          </button>
-          <button onClick={() => { setView(view === "crafting" ? "beregner" : "crafting"); setShowSettings(false); }}
-            className={navTabClass} style={navTabStyle(view === "crafting")}>
-            <Hammer size={16} /> Crafting
-          </button>
-          <button onClick={() => { setView(view === "vagt" ? "beregner" : "vagt"); setShowSettings(false); }}
-            className={navTabClass} style={navTabStyle(view === "vagt")}>
-            <Clock size={16} /> Vagt
-          </button>
-          {canManageStore && (
-            <button onClick={() => { setView(view === "ansatte" ? "beregner" : "ansatte"); setShowSettings(false); }}
-              className={navTabClass} style={navTabStyle(view === "ansatte")}>
-              <Users size={16} /> Ansatte
-            </button>
+          {sidebarOpen && (
+            <>
+              <div className="fixed inset-0 z-40" style={{ background: "rgba(0,0,0,.6)" }} onClick={() => setSidebarOpen(false)} />
+              <aside className="fixed inset-y-0 left-0 z-50 flex flex-col" style={{ width: 260, maxWidth: "82vw", background: INK, borderRight: "1px solid rgba(255,255,255,.08)" }}>
+                <button onClick={() => setSidebarOpen(false)} className="self-end p-2 m-2 rounded-lg" style={{ color: "rgba(255,255,255,.5)" }} aria-label="Luk menu">
+                  <X size={18} />
+                </button>
+                {sidebarContent}
+              </aside>
+            </>
           )}
-          {canManageStore && (
-            <button onClick={() => { setView(view === "medarbejdere" ? "beregner" : "medarbejdere"); setShowSettings(false); }}
-              className={navTabClass} style={navTabStyle(view === "medarbejdere")}>
-              <Wallet size={16} /> Medarbejdere
-            </button>
-          )}
-          {canViewLeaderboard && (
-            <button onClick={() => { setView(view === "leaderboard" ? "beregner" : "leaderboard"); setShowSettings(false); }}
-              className={navTabClass} style={navTabStyle(view === "leaderboard")}>
-              <Trophy size={16} /> Leaderboard
-            </button>
-          )}
-          {isOwner && (
-            <button onClick={() => { setView(view === "aktivitet" ? "beregner" : "aktivitet"); setShowSettings(false); }}
-              className={navTabClass} style={navTabStyle(view === "aktivitet")}>
-              <Activity size={16} /> Aktivitet
-            </button>
-          )}
-          <button onClick={() => { setView(view === "log" ? "beregner" : "log"); setShowSettings(false); }}
-            className={navTabClass} style={navTabStyle(view === "log")}>
-            <BarChart3 size={16} /> Dagbog
-          </button>
-          <button onClick={() => { setView(view === "topvarer" ? "beregner" : "topvarer"); setShowSettings(false); }}
-            className={navTabClass} style={navTabStyle(view === "topvarer")}>
-            <TrendingUp size={16} /> Top-varer
-          </button>
-          <button onClick={() => { setView(view === "stamkunder" ? "beregner" : "stamkunder"); setShowSettings(false); }}
-            className={navTabClass} style={navTabStyle(view === "stamkunder")}>
-            <Star size={16} /> Stamkunder
-          </button>
-          {canManageStore && (
-            <button onClick={toggleSettings}
-              className="flex items-center gap-1.5 pl-3 pr-3.5 py-1.5 rounded-full font-black text-sm ml-1"
-              style={{ background: GOLD, color: INK }}
-              aria-label="Rediger materialer og priser">
-              <Settings size={16} /> {showSettings ? "Luk" : "Rediger"}
-            </button>
-          )}
-          <button onClick={doLogout} title="Log ud"
-            className="flex items-center justify-center w-9 h-9 rounded-full font-black text-sm ml-1"
-            style={{ background: "rgba(234,179,8,.12)", color: GOLD }}>
-            <LogOut size={16} />
-          </button>
-        </div>
-      </div>
+        </>
+      )}
 
+      <div style={wide ? { marginLeft: SIDEBAR_W } : {}}>
       {view === "kunder" && !showSettings ? (
         <Customers sales={sales} config={config} cur={cur} wide={wide} openCust={openCust} setOpenCust={setOpenCust}
           canManage={canManageStore} onDeleteCustomer={handleDeleteCustomer}
@@ -1941,6 +2013,7 @@ export default function App() {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
