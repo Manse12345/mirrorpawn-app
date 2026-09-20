@@ -3252,6 +3252,7 @@ function SalesLog({ sales, cur, wide, onClear, onReverse, onEditCustomer, onEdit
                     {isSell ? "🏷️ Salg" : "💰 Køb"}
                   </span>
                   {d.toLocaleDateString("da-DK")} · {d.toTimeString().slice(0, 5)}
+                  {t.sellerName && ` · af ${t.sellerName}`}
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="font-black tabular-nums" style={{ color: isGain ? (dk ? "#4ade80" : GREEN) : (dk ? "#f87171" : RED) }}>{amountPrefix}{fmt(netAmount)} {cur}</span>
