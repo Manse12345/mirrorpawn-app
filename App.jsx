@@ -1458,8 +1458,8 @@ export default function App() {
   const sidebarContent = (
     <>
       <button onClick={goHome} className="flex items-center gap-3.5 px-4 pt-5 pb-4 text-left w-full shrink-0" title="Til forsiden">
-        <span className="inline-flex items-center justify-center shrink-0" style={{ width: 44, height: 44 }}>
-          <img src="/logo.png" alt="Mirror Pawnshop" className="max-w-full max-h-full rounded-lg" style={{ objectFit: "contain" }} />
+        <span className="inline-flex items-center justify-center shrink-0 overflow-hidden rounded-lg" style={{ width: 38, height: 38 }}>
+          <img src="/logo.png" alt="Mirror Pawnshop" className="w-full h-full" style={{ objectFit: "contain" }} />
         </span>
         <div className="min-w-0">
           <div className="uppercase tracking-widest font-bold text-[10px]" style={{ color: GOLD }}>Buy · Sell · Trade</div>
@@ -1625,9 +1625,10 @@ export default function App() {
             <button onClick={() => setSidebarOpen(true)} className="p-1.5 -ml-1.5 rounded-lg" style={{ color: GOLD }} aria-label="Åbn menu">
               <Menu size={22} />
             </button>
-            <span className="inline-flex items-center justify-center rounded-lg font-black shrink-0"
-              style={{ background: GOLD, color: INK, width: 34, height: 34, fontSize: 17 }}>◆</span>
-            <span className="font-black text-lg truncate">{config.shopName}</span>
+            <span className="inline-flex items-center justify-center shrink-0 overflow-hidden rounded-lg ml-1" style={{ width: 36, height: 36 }}>
+              <img src="/logo.png" alt="Mirror Pawnshop" className="w-full h-full" style={{ objectFit: "contain" }} />
+            </span>
+            <span className="font-black text-lg truncate ml-0.5">{config.shopName}</span>
           </div>
           {sidebarOpen && (
             <>
@@ -3014,7 +3015,9 @@ function LoginScreen({ username, setUsername, password, setPassword, err, busy, 
     <div className="min-h-screen flex items-center justify-center font-sans px-4" style={{ background: INK }}>
       <form onSubmit={(e) => { e.preventDefault(); onSubmit(); }} className="w-full max-w-xs rounded-2xl p-6" style={{ background: PANEL, border: "1px solid #333" }}>
         <div className="flex items-center justify-center mb-4">
-          <span className="inline-flex items-center justify-center rounded-lg font-black" style={{ background: GOLD, color: INK, width: 48, height: 48, fontSize: 24 }}>◆</span>
+          <span className="inline-flex items-center justify-center overflow-hidden rounded-lg" style={{ width: 40, height: 40 }}>
+            <img src="/logo.png" alt="Mirror Pawnshop" className="w-full h-full" style={{ objectFit: "contain" }} />
+          </span>
         </div>
         <div className="text-center uppercase tracking-widest font-bold text-[11px] mb-1" style={{ color: GOLD }}>Buy · Sell · Trade</div>
         <div className="text-center text-white font-black text-xl mb-5">Log ind</div>
